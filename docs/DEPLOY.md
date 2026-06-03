@@ -16,7 +16,7 @@ VPS: `root@89.116.25.222` · directorio: `/opt/inovaweb-admin-financiera`.
 | `git` instalado en VPS | `which git` | `apt install git` |
 | Docker 24+ en VPS | `docker --version` | Ya instalado en el VPS |
 | Docker Compose v2 | `docker compose version` | Ya instalado en el VPS |
-| Red Docker `n8n_net` existente | `docker network ls \| grep n8n_net` | Stack n8n del VPS la crea |
+| Red Docker `n8n_default` existente | `docker network ls \| grep n8n_default` | Stack n8n del VPS la crea |
 | Caddy del stack n8n corriendo | `docker ps \| grep caddy` | Stack n8n |
 | Archivo `.env` completo en VPS | `cat /opt/inovaweb-admin-financiera/.env` | Generar a partir de `.env.example` |
 | CSD del SAT (sólo prod) | `ls /opt/inovaweb-admin-financiera/secrets/` | Tramitar con contador |

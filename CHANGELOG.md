@@ -88,7 +88,7 @@ nuevas features, fixes ni cambios de contrato.
   - `monthly_closing`, `invoice_retry`, `overdue_notifier` con
     `profiles: ["jobs"]` y `restart: "no"`.
   - Volumen `caf_invoices` para PDFs/XML.
-  - Red `caf_net` interna + conexión a `n8n_net` para Caddy.
+  - Red `caf_net` interna + conexión a `n8n_default` para Caddy.
 - `Dockerfile` con Python 3.12 slim, healthcheck y entrypoint uvicorn con
   `--proxy-headers`.
 - `Caddyfile` de referencia para los dos dominios públicos con HSTS,

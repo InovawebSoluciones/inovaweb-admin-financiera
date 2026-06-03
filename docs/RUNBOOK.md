@@ -95,13 +95,13 @@ curl -s http://localhost:8006/health/db
 **Diagnóstico:**
 - Caddy del stack n8n no encuentra el backend.
 ```bash
-# verificar que el contenedor está en la red n8n_net
-docker network inspect n8n_net | grep caf_app
+# verificar que el contenedor está en la red n8n_default
+docker network inspect n8n_default | grep caf_app
 ```
 
 **Fix:**
 ```bash
-docker network connect n8n_net caf_app
+docker network connect n8n_default caf_app
 # o bien recrear con la red declarada en docker-compose.yml
 docker compose up -d --force-recreate admin_financiera
 ```

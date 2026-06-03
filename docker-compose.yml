@@ -35,7 +35,7 @@ services:
       - "8006:8001"
     networks:
       - caf_net
-      - n8n_net
+      - n8n_default
 
   monthly_closing:
     build: .
@@ -88,8 +88,9 @@ services:
 networks:
   caf_net:
     driver: bridge
-  n8n_net:
+  n8n_default:
     external: true
+    name: n8n_default
 
 volumes:
   caf_pgdata:
