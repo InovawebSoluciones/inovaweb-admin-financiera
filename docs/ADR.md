@@ -294,14 +294,90 @@ SKIP LOCKED LIMIT N`, procesan, actualizan estado. Mismo patrón que
 
 ---
 
+## ADR-009: El medidor IA es la fuente única del costo de consumo de IA por cliente
+
+**Fecha:** 2026-06-03
+**Estado:** Aprobado
+
+### Contexto
+Cada llamada a un LLM (DeepSeek, OpenAI, Claude, etc.) reporta el consumo de
+tokens (entrada + salida). Ese consumo hay que convertirlo a costo monetario
+y cobrarlo al cliente. Dónde vive esa lógica define la arquitectura
+financiera del consumo IA en toda la plataforma.
+
+Opciones discutidas:
+- Que cada app Nivel 3 calcule su propio costo y reporte el monto al CAF.
+- Que el CAF lea tokens crudos y los multiplique por tarifa configurada.
+- Que el medidor IA reciba el reporte de tokens, calcule el costo en pesos
+  mexicanos (centavos enteros BIGINT), debite el wallet del cliente y emita
+  un evento `direction=debit, source=medidor` al finanzas-core.
+
+### Decisión
+**El medidor IA (Nivel 1) es la única pieza autorizada para convertir tokens
+a pesos.** Toda llamada a LLM en cualquier app Nivel 3 pasa por el medidor
+(o por su proxy de LLM), que:
+
+1. Recibe el reporte de tokens de la IA (`tokens_in`, `tokens_out`, modelo).
+2. Aplica la tarifa vigente del modelo (en centavos por mil tokens).
+3. Debita el wallet del cliente en centavos MXN.
+4. POST al finanzas-core con `source_slug=medidor`, `direction=debit`,
+   `amount_cents=<pesos en centavos>`.
+
+El CAF jamás duplica saldos ni recalcula costos de IA. Para mostrar saldo y
+consumo en el portal cliente, el CAF consume:
+- `GET /v1/wallets/{wallet_id}/balance` del medidor.
+- `GET /v1/usage?from_ts=...&to_ts=...&project_id=<wallet_id>` del medidor.
+
+Para el cierre mensual, el CAF agrega del finanzas-core los eventos
+`source=medidor` del cliente y los presenta en la factura como "consumo IA"
+sin recalcular.
+
+### Alternativas consideradas
+- **CAF recalcula costo de IA con tarifa propia:** descartado. Habría dos
+  fuentes de verdad (tarifa en CAF y tarifa en medidor) y inevitablemente
+  divergirían. Además, el medidor ya debita el wallet en vivo; si CAF
+  recalculara distinto, el cliente vería saldos contradictorios.
+- **Cada app Nivel 3 calcula su costo de IA:** descartado. Implica
+  reimplementar tarifas en cada app, y abre la puerta a fraude (la app
+  podría reportar menos consumo del real).
+- **Tarifa cableada en código del medidor:** descartado dentro del propio
+  medidor (debe ser configurable en BD del medidor), pero el medidor sigue
+  siendo el único responsable de aplicarla.
+
+### Consecuencias
+- ✅ Una sola fuente del costo IA en pesos para toda la plataforma.
+- ✅ El cliente ve el mismo número en el wallet del medidor, en el portal
+  CAF y en la factura mensual.
+- ✅ Cambiar la tarifa de un modelo (ej. baja de precio de DeepSeek) se
+  hace en el medidor y todos los cores se enteran sin redeploy.
+- ⚠️ Caída del medidor = no se puede consumir IA en ninguna app Nivel 3.
+  Mitigación: SLO estricto del medidor (>99.9%), monitoreo dedicado, y el
+  medidor es el core más viejo y estable del stack.
+- ⚠️ Cambio de tarifa con consumo en vuelo requiere versionado de tarifa
+  con `valid_from` para evitar recalcular consumo histórico. Documentado
+  como deuda del medidor (no del CAF).
+
+### Cómo se ve en el CAF
+- `app/core/clients/medidor_client.py` solo expone lectura
+  (`get_balance`, `get_usage_summary`, `get_usage_events`) y acreditación
+  por recargas confirmadas (`credit_after_recharge`). **No tiene método
+  para debitar ni para recalcular costo de IA.**
+- El cierre mensual (`app/services/billing.py`) lee eventos del
+  finanzas-core con `source=medidor` y los presenta como-son. No
+  multiplica ni convierte.
+- El portal cliente (`/portal/dashboard`, `/portal/usage`) hace pass-through
+  de los números del medidor.
+
+---
+
 ## Pendientes de ADR (placeholder)
 
-- **ADR-009: Selección concreta de PAC** — diferida hasta sprint 4. Decisión
+- **ADR-010: Selección concreta de PAC** — diferida hasta sprint 4. Decisión
   entre Facturama, Solución Factible, Edicom. Variables a comparar: precio
   por timbre, SLA, soporte en español, calidad de la API.
-- **ADR-010: Backups y RPO/RTO del CAF** — `[TODO: completar]`. Necesita
+- **ADR-011: Backups y RPO/RTO del CAF** — `[TODO: completar]`. Necesita
   decisión sobre destino (S3 / Backblaze / OneDrive corporativo) y
   frecuencia.
-- **ADR-011: 2FA para super-admin** — mencionado en CLAUDE.md y SECURITY.md
+- **ADR-012: 2FA para super-admin** — mencionado en CLAUDE.md y SECURITY.md
   como requisito; tecnología concreta (TOTP / WebAuthn / push) `[TODO:
   completar]`.

@@ -378,6 +378,57 @@ endpoint directo del medidor.
 
 ---
 
+### 4.3 Síntoma: cargo de IA en la factura del cliente parece equivocado
+
+**Contexto:** el medidor IA es la fuente única del costo de IA (ADR-009). El
+CAF nunca recalcula tokens → pesos; solo agrega los eventos
+`source=medidor, direction=debit` que el finanzas-core ya tiene.
+
+**Diagnóstico:**
+
+1. ¿El monto en la factura coincide con la suma de eventos del medidor?
+```sql
+-- en la BD del CAF, ver qué cargo IA puso la factura
+SELECT id, total_cents, ai_charge_cents
+FROM invoices
+WHERE id = '<invoice_id>';
+
+-- en finanzas-core, ver los eventos del medidor del período
+SELECT sum(amount_cents)
+FROM ledger_entries
+WHERE source_slug = 'medidor'
+  AND direction  = 'debit'
+  AND tenant_id  = '<tenant_uuid>'
+  AND occurred_at >= '<inicio_periodo>'
+  AND occurred_at <  '<fin_periodo>';
+```
+Si los números difieren → bug en `app/services/billing.py` (agregación
+incorrecta).
+
+2. Si la suma del finanzas-core no se parece a lo que el cliente esperaba
+   ver consumido → el problema está en el medidor (tarifa mal cargada, o
+   tokens reportados incorrectamente por la IA proxy).
+
+**Fix:**
+- Discrepancia entre CAF y finanzas-core: corregir agregación en CAF y
+  re-correr el cierre del período afectado (`POST /api/v2/billing/run-closing`
+  con `period=YYYY-MM` y `force=true`).
+- Discrepancia entre medidor y expectativa del cliente: NO tocar en CAF.
+  Reportar al equipo del medidor; el medidor maneja tarifas, modelos
+  habilitados y conversión tokens→pesos.
+
+**Verificación:**
+```bash
+# que el agregado del CAF y del finanzas coincidan exactamente
+docker exec -it caf_app python -c "
+import asyncio
+from app.services.billing import _ai_charge_for_period
+asyncio.run(_ai_charge_for_period('<client_id>', '2026-05'))
+"
+```
+
+---
+
 ## 5. Webhooks
 
 ### 5.1 Síntoma: PAC dice que envió webhook pero la factura sigue en

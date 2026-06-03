@@ -17,7 +17,9 @@ Próximo sprint: integración real con cores + UI HTMX.
 
 ```
 NIVEL 1 - APIs core (en producción)
-├─ medidor.inovaweb.com.mx          (wallets + consumo IA)
+├─ medidor.inovaweb.com.mx          (wallets prepago + mide cada llamada a LLM
+│                                    y cobra el costo en pesos/centavos MXN —
+│                                    fuente única del costo de IA por cliente)
 ├─ hub.inovaweb.com.mx              (cobros tarjeta/SPEI/OXXO)
 ├─ finanzas.inovaweb.com.mx         (ledger inmutable)
 └─ mensajes.inovaweb.com.mx         (email/WhatsApp/push)
@@ -232,7 +234,9 @@ puertos `8000-8005` están ocupados por los cores Nivel 1 y n8n.
 
 ### 6.4 API JSON (`/api/v2/*`)
 - `POST /api/v2/clients` — alta atómica programática (Saga)
-- `GET /api/v2/clients/{id}/balance` — saldo consolidado desde medidor
+- `GET /api/v2/clients/{id}/balance` — saldo y consumo IA del cliente
+  (el CAF consulta al medidor, nunca duplica el saldo ni el costo de IA;
+  el medidor es la fuente de verdad)
 - `GET /api/v2/reports/income` — agregados de ingreso
 - `POST /api/v2/billing/run-closing` — trigger manual de cierre
 

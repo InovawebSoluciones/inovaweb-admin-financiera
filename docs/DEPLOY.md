@@ -20,7 +20,7 @@ VPS: `root@89.116.25.222` · directorio: `/opt/inovaweb-admin-financiera`.
 | Caddy del stack n8n corriendo | `docker ps \| grep caddy` | Stack n8n |
 | Archivo `.env` completo en VPS | `cat /opt/inovaweb-admin-financiera/.env` | Generar a partir de `.env.example` |
 | CSD del SAT (sólo prod) | `ls /opt/inovaweb-admin-financiera/secrets/` | Tramitar con contador |
-| Llaves admin de los 4 cores Nivel 1 | Variables `*_API_KEY` en `.env` | Emitir vía SQL en cada core (ver `docs/01-admin-financiera-integracion-cores.md`) |
+| Llaves admin de los 4 cores Nivel 1 (medidor IA, hub-pasarelas, finanzas-core, centro-mensajes) | Variables `MEDIDOR_API_KEY` / `HUB_API_KEY` / `FINANZAS_API_KEY` / `MESSAGES_API_KEY` en `.env` | Emitir vía SQL en cada core (ver `docs/01-admin-financiera-integracion-cores.md`). El medidor IA es la fuente única del costo de IA por cliente (ADR-009); sin su API key el CAF no puede leer saldo ni consumo |
 | Llaves del PAC | `PAC_API_KEY`, `PAC_API_SECRET` en `.env` | Dashboard del PAC contratado |
 
 ---

@@ -7,6 +7,41 @@ Orden cronológico inverso: lo más reciente primero.
 
 ---
 
+## [0.1.1] — 2026-06-03 — Clarificación del rol del medidor IA
+
+### Cambiado
+- `README.md` §1.1: la descripción del medidor IA ahora explicita que
+  además de mantener wallets prepago, **mide cada llamada a LLM y cobra
+  el costo en pesos mexicanos (centavos enteros MXN)** — es la fuente
+  única del costo de IA por cliente en toda la plataforma Inovaweb.
+- `README.md` §6.4: el endpoint `GET /api/v2/clients/{id}/balance` deja
+  claro que el CAF jamás duplica saldo ni recalcula costo de IA; el
+  medidor es siempre la fuente de verdad.
+- `docs/DEPLOY.md` §1: pre-requisitos identifican por nombre los 4 cores
+  (medidor IA, hub-pasarelas, finanzas-core, centro-mensajes) y aclaran
+  que sin la API key del medidor el CAF no puede mostrar saldo ni consumo.
+
+### Agregado
+- `docs/ADR.md` ADR-009: **El medidor IA es la fuente única del costo de
+  consumo de IA por cliente.** Documenta por qué el CAF no recalcula
+  tokens → pesos y por qué `medidor_client.py` solo expone lectura
+  (`get_balance`, `get_usage_summary`, `get_usage_events`) más
+  acreditación por recargas confirmadas — nunca cálculo de tarifa.
+- `docs/RUNBOOK.md` §4.3: procedimiento "cargo de IA en la factura del
+  cliente parece equivocado" — cómo distinguir si la discrepancia está
+  en el agregado del CAF (sobre eventos del finanzas-core) o en el
+  medidor (tarifa / tokens reportados), y dónde corregir cada caso.
+
+### Renumeración
+- Los placeholders previos ADR-009/010/011 (PAC concreto, backups, 2FA)
+  se renumeran a ADR-010/011/012.
+
+### Sin cambios de código
+Esta versión es documental. No introduce migraciones SQL ni cambios de
+contrato HTTP.
+
+---
+
 ## [0.1.0] — 2026-06-03 — Cierre Sprint 1: scaffolding + documentación formal
 
 ### Agregado
