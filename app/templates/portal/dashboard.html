@@ -1,0 +1,31 @@
+{% extends "portal/_layout.html" %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-4">Hola, {{ client.legal_name }}</h1>
+<div class="grid sm:grid-cols-2 gap-4">
+  <div class="bg-white rounded shadow-sm p-5">
+    <div class="text-xs text-slate-500">Saldo</div>
+    <div class="text-3xl font-bold">${{ '%.2f'|format((balance.balance_cents or 0)/100) }}</div>
+    <form method="post" action="/portal/recharge" class="mt-3 flex gap-2">
+      <input name="amount_cents" type="number" min="5000" step="100"
+             placeholder="Monto en centavos"
+             class="border rounded px-2 py-1 text-sm flex-1">
+      <button class="bg-slate-900 text-white text-sm px-3 rounded">Recargar</button>
+    </form>
+  </div>
+  <div class="bg-white rounded shadow-sm p-5">
+    <div class="text-xs text-slate-500">Consumo del mes</div>
+    {% set items = usage.get('items', []) %}
+    {% if items %}
+      <ul class="text-sm mt-2">
+        {% for u in items %}
+          <li class="flex justify-between border-b py-1">
+            <span>{{ u.service_code }}</span><span>{{ u.units }}</span>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="text-sm text-slate-500 mt-2">Sin consumo registrado.</p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,47 @@
+{% extends "admin/_layout.html" %}
+{% block heading %}Nuevo cliente{% endblock %}
+{% block content %}
+<form method="post" action="/admin/clients" class="bg-white p-6 rounded shadow-sm max-w-3xl">
+  <h2 class="text-lg font-semibold mb-4">Datos fiscales</h2>
+  <div class="grid grid-cols-2 gap-3">
+    <div><label class="text-xs">Razon social</label>
+      <input name="legal_name" required class="w-full border rounded px-3 py-2"></div>
+    <div><label class="text-xs">Nombre comercial</label>
+      <input name="trade_name" class="w-full border rounded px-3 py-2"></div>
+    <div><label class="text-xs">RFC</label>
+      <input name="rfc" required class="w-full border rounded px-3 py-2 font-mono"></div>
+    <div><label class="text-xs">Uso CFDI</label>
+      <input name="cfdi_use" value="G03" class="w-full border rounded px-3 py-2"></div>
+    <div><label class="text-xs">Regimen fiscal</label>
+      <input name="tax_regime" required class="w-full border rounded px-3 py-2"></div>
+    <div><label class="text-xs">CP</label>
+      <input name="zip_code" required class="w-full border rounded px-3 py-2"></div>
+    <div><label class="text-xs">Email facturacion</label>
+      <input name="billing_email" type="email" required class="w-full border rounded px-3 py-2"></div>
+    <div><label class="text-xs">Telefono</label>
+      <input name="contact_phone" class="w-full border rounded px-3 py-2"></div>
+  </div>
+
+  <h2 class="text-lg font-semibold mt-6 mb-3">Plan inicial</h2>
+  <select name="plan_code" required class="border rounded px-3 py-2 w-full">
+    {% for p in plans %}<option value="{{ p.code }}">{{ p.name }} ({{ p.code }})</option>{% endfor %}
+  </select>
+
+  <h2 class="text-lg font-semibold mt-6 mb-3">Usuario titular</h2>
+  <div class="grid grid-cols-2 gap-3">
+    <div><label class="text-xs">Nombre completo</label>
+      <input name="titular_full_name" required class="w-full border rounded px-3 py-2"></div>
+    <div><label class="text-xs">Email</label>
+      <input name="titular_email" type="email" required class="w-full border rounded px-3 py-2"></div>
+  </div>
+
+  <div class="mt-6 flex gap-2">
+    <button class="bg-slate-900 text-white px-4 py-2 rounded">Crear cliente</button>
+    <a href="/admin/clients" class="px-4 py-2 rounded border">Cancelar</a>
+  </div>
+  <p class="mt-4 text-xs text-slate-500">
+    Esto creara la cuenta en los 4 cores Nivel 1 (medidor, hub, finanzas, mensajes)
+    y emitira API keys. Operacion atomica con compensacion.
+  </p>
+</form>
+{% endblock %}

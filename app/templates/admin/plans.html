@@ -1,0 +1,22 @@
+{% extends "admin/_layout.html" %}
+{% block heading %}Planes{% endblock %}
+{% block content %}
+<div class="bg-white shadow-sm rounded overflow-x-auto">
+  <table class="w-full text-sm">
+    <thead class="bg-slate-100 text-xs uppercase text-slate-600">
+      <tr><th class="px-3 py-2 text-left">Codigo</th><th class="px-3 py-2 text-left">Nombre</th>
+        <th class="px-3 py-2 text-right">Cuota mensual</th>
+        <th class="px-3 py-2 text-left">Free</th><th class="px-3 py-2 text-left">Activo</th></tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr class="border-t"><td class="px-3 py-2 font-mono">{{ r.code }}</td>
+        <td class="px-3 py-2">{{ r.name }}</td>
+        <td class="px-3 py-2 text-right">${{ '%.2f'|format(r.monthly_fee_cents/100) }}</td>
+        <td class="px-3 py-2">{{ 'si' if r.is_free else 'no' }}</td>
+        <td class="px-3 py-2">{{ 'si' if r.is_active else 'no' }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,46 @@
+# Caddyfile de referencia para Inovaweb CAF (Nivel 2).
+# Se integra al stack n8n existente en el VPS Contabo (89.116.25.222).
+# El backend FastAPI escucha en el contenedor admin_financiera:8001
+# y publica al host en 8006. Caddy enruta DOS dominios al MISMO backend;
+# la aplicacion distingue por Host header (HostEnforcementMiddleware).
+
+admin.inovaweb.com.mx {
+    encode zstd gzip
+    reverse_proxy admin_financiera:8001 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up Host {host}
+    }
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        Permissions-Policy "geolocation=(), microphone=(), camera=()"
+        -Server
+    }
+    log {
+        output file /var/log/caddy/caf-admin.log
+        format json
+    }
+}
+
+app.inovaweb.com.mx {
+    encode zstd gzip
+    reverse_proxy admin_financiera:8001 {
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+        header_up Host {host}
+    }
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Content-Type-Options "nosniff"
+        X-Frame-Options "DENY"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+    log {
+        output file /var/log/caddy/caf-portal.log
+        format json
+    }
+}

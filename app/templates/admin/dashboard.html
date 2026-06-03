@@ -1,0 +1,22 @@
+{% extends "admin/_layout.html" %}
+{% block heading %}Dashboard{% endblock %}
+{% block content %}
+<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+  <div class="bg-white p-5 rounded shadow-sm">
+    <div class="text-xs text-slate-500">Clientes activos</div>
+    <div class="text-3xl font-bold">{{ m.clients_active }}</div>
+  </div>
+  <div class="bg-white p-5 rounded shadow-sm">
+    <div class="text-xs text-slate-500">Suspendidos</div>
+    <div class="text-3xl font-bold">{{ m.clients_suspended }}</div>
+  </div>
+  <div class="bg-white p-5 rounded shadow-sm">
+    <div class="text-xs text-slate-500">Ingreso del mes</div>
+    <div class="text-3xl font-bold">${{ '%.2f'|format(m.mtd_income_cents / 100) }}</div>
+  </div>
+  <div class="bg-white p-5 rounded shadow-sm">
+    <div class="text-xs text-slate-500">Facturas pendientes timbre</div>
+    <div class="text-3xl font-bold">{{ m.pending_stamp }}</div>
+  </div>
+</div>
+{% endblock %}

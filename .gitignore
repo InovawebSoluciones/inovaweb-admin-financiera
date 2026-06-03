@@ -1,0 +1,46 @@
+# entornos virtuales
+.venv/
+venv/
+env/
+
+# python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+*.egg
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# entorno y secretos
+.env
+.env.*
+!.env.example
+secrets/
+*.cer
+*.key
+*.pem
+*.pfx
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# Docker / runtime
+*.log
+caf_pgdata/
+caf_invoices/
+
+# node (no se usa pero por si)
+node_modules/

@@ -1,0 +1,28 @@
+{% extends "admin/_layout.html" %}
+{% block heading %}Promociones{% endblock %}
+{% block content %}
+<div class="bg-white shadow-sm rounded overflow-x-auto">
+  <table class="w-full text-sm">
+    <thead class="bg-slate-100 text-xs uppercase text-slate-600">
+      <tr><th class="px-3 py-2 text-left">Codigo</th><th class="px-3 py-2 text-left">Nombre</th>
+        <th class="px-3 py-2 text-left">Tipo</th><th class="px-3 py-2 text-left">Descuento</th>
+        <th class="px-3 py-2 text-left">Vigencia</th>
+        <th class="px-3 py-2 text-right">Usos</th></tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr class="border-t"><td class="px-3 py-2 font-mono">{{ r.code }}</td>
+        <td class="px-3 py-2">{{ r.name }}</td>
+        <td class="px-3 py-2">{{ r.kind }}</td>
+        <td class="px-3 py-2">
+          {% if r.discount_pct %}{{ r.discount_pct }}%
+          {% else %}${{ '%.2f'|format((r.discount_cents or 0)/100) }}{% endif %}
+        </td>
+        <td class="px-3 py-2 text-xs">{{ r.valid_from.strftime('%Y-%m-%d') }} - {{ r.valid_to.strftime('%Y-%m-%d') }}</td>
+        <td class="px-3 py-2 text-right">{{ r.uses_count }}{% if r.max_uses %} / {{ r.max_uses }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

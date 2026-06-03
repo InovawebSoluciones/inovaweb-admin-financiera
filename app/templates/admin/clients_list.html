@@ -1,0 +1,54 @@
+{% extends "admin/_layout.html" %}
+{% block heading %}Clientes{% endblock %}
+{% block content %}
+<div class="flex justify-between items-center mb-4">
+  <form method="get" class="flex gap-2">
+    <input name="q" value="{{ q or '' }}" placeholder="Buscar por nombre o RFC"
+           class="border rounded px-3 py-1.5 text-sm w-64">
+    <select name="page_status" class="border rounded px-2 py-1.5 text-sm">
+      <option value="">Todos</option>
+      <option value="active"    {% if page_status=='active' %}selected{% endif %}>Activos</option>
+      <option value="suspended" {% if page_status=='suspended' %}selected{% endif %}>Suspendidos</option>
+      <option value="cancelled" {% if page_status=='cancelled' %}selected{% endif %}>Cancelados</option>
+    </select>
+    <button class="bg-slate-200 px-3 rounded text-sm">Filtrar</button>
+  </form>
+  <a href="/admin/clients/new"
+     class="bg-slate-900 text-white text-sm px-4 py-2 rounded">+ Nuevo cliente</a>
+</div>
+<div class="bg-white shadow-sm rounded overflow-x-auto">
+  <table class="w-full text-sm">
+    <thead class="bg-slate-100 text-slate-600 text-xs uppercase">
+      <tr>
+        <th class="px-4 py-2 text-left">ID</th>
+        <th class="px-4 py-2 text-left">Razon social</th>
+        <th class="px-4 py-2 text-left">RFC</th>
+        <th class="px-4 py-2 text-left">Email</th>
+        <th class="px-4 py-2 text-left">Estado</th>
+        <th class="px-4 py-2 text-left">Alta</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for c in clients %}
+      <tr class="border-t hover:bg-slate-50">
+        <td class="px-4 py-2">
+          <a href="/admin/clients/{{ c.id }}" class="text-blue-600">#{{ c.id }}</a>
+        </td>
+        <td class="px-4 py-2">{{ c.legal_name }}</td>
+        <td class="px-4 py-2 font-mono">{{ c.rfc }}</td>
+        <td class="px-4 py-2">{{ c.billing_email }}</td>
+        <td class="px-4 py-2">
+          <span class="text-xs px-2 py-0.5 rounded
+            {% if c.status=='active' %}bg-green-100 text-green-700
+            {% elif c.status=='suspended' %}bg-yellow-100 text-yellow-700
+            {% else %}bg-slate-200 text-slate-700{% endif %}">
+            {{ c.status }}
+          </span>
+        </td>
+        <td class="px-4 py-2 text-xs text-slate-500">{{ c.created_at.strftime('%Y-%m-%d') }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

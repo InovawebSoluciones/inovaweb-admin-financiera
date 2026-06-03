@@ -1,0 +1,22 @@
+{% extends "portal/_layout.html" %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-4">Consumo detallado</h1>
+<div class="bg-white rounded shadow-sm overflow-x-auto">
+  <table class="w-full text-sm">
+    <thead class="bg-slate-100 text-xs uppercase text-slate-600">
+      <tr><th class="px-3 py-2 text-left">Servicio</th>
+        <th class="px-3 py-2 text-right">Unidades</th></tr>
+    </thead>
+    <tbody>
+      {% for u in usage.get('items', []) %}
+      <tr class="border-t">
+        <td class="px-3 py-2">{{ u.service_code }}</td>
+        <td class="px-3 py-2 text-right">{{ u.units }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="2" class="px-3 py-4 text-center text-slate-500">Sin datos.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

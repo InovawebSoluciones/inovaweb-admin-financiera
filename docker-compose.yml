@@ -1,0 +1,96 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: caf_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-caf}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-admin_financiera}
+    volumes:
+      - caf_pgdata:/var/lib/postgresql/data
+      - ./database:/docker-entrypoint-initdb.d:ro
+    networks:
+      - caf_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-caf} -d ${POSTGRES_DB:-admin_financiera}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  admin_financiera:
+    build: .
+    container_name: caf_app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-caf}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-admin_financiera}
+    volumes:
+      - caf_invoices:/var/lib/caf/invoices
+      - ./secrets:/secrets:ro
+    ports:
+      - "8006:8001"
+    networks:
+      - caf_net
+      - n8n_net
+
+  monthly_closing:
+    build: .
+    container_name: caf_monthly_closing
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-caf}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-admin_financiera}
+    command: ["python", "-m", "app.workers.monthly_closing"]
+    networks:
+      - caf_net
+    profiles: ["jobs"]
+
+  invoice_retry:
+    build: .
+    container_name: caf_invoice_retry
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-caf}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-admin_financiera}
+    volumes:
+      - caf_invoices:/var/lib/caf/invoices
+      - ./secrets:/secrets:ro
+    command: ["python", "-m", "app.workers.invoice_retry"]
+    networks:
+      - caf_net
+    profiles: ["jobs"]
+
+  overdue_notifier:
+    build: .
+    container_name: caf_overdue_notifier
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-caf}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-admin_financiera}
+    command: ["python", "-m", "app.workers.overdue_notifier"]
+    networks:
+      - caf_net
+    profiles: ["jobs"]
+
+networks:
+  caf_net:
+    driver: bridge
+  n8n_net:
+    external: true
+
+volumes:
+  caf_pgdata:
+  caf_invoices:

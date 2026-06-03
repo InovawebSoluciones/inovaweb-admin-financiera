@@ -1,0 +1,56 @@
+{% extends "admin/_layout.html" %}
+{% block heading %}Cliente #{{ c.id }}{% endblock %}
+{% block content %}
+<div class="bg-white p-6 rounded shadow-sm">
+  <h2 class="text-xl font-bold">{{ c.legal_name }}</h2>
+  <p class="text-sm text-slate-500 font-mono">{{ c.rfc }}</p>
+  <p class="mt-2 text-sm">
+    Estado:
+    <span class="text-xs px-2 py-0.5 rounded
+      {% if c.status=='active' %}bg-green-100 text-green-700
+      {% elif c.status=='suspended' %}bg-yellow-100 text-yellow-700
+      {% else %}bg-slate-200 text-slate-700{% endif %}">{{ c.status }}</span>
+  </p>
+
+  <div class="grid grid-cols-2 gap-x-8 gap-y-2 mt-6 text-sm">
+    <div><b>Email facturacion:</b> {{ c.billing_email }}</div>
+    <div><b>Telefono:</b> {{ c.contact_phone or '-' }}</div>
+    <div><b>CP:</b> {{ c.zip_code }}</div>
+    <div><b>Regimen:</b> {{ c.tax_regime }}</div>
+    <div><b>Uso CFDI:</b> {{ c.cfdi_use }}</div>
+    <div><b>Alta:</b> {{ c.created_at.strftime('%Y-%m-%d') }}</div>
+  </div>
+
+  <h3 class="font-semibold mt-6 mb-2">IDs externos en cores</h3>
+  <ul class="text-xs font-mono space-y-1">
+    <li>medidor:  {{ c.medidor_account_id or '-' }}</li>
+    <li>hub:      {{ c.hub_account_id or '-' }}</li>
+    <li>finanzas: {{ c.finanzas_account_id or '-' }}</li>
+    <li>mensajes: {{ c.messages_account_id or '-' }}</li>
+  </ul>
+
+  <h3 class="font-semibold mt-6 mb-2">Suscripciones</h3>
+  <table class="w-full text-sm">
+    <thead class="bg-slate-100 text-xs uppercase text-slate-600">
+      <tr><th class="px-3 py-2 text-left">ID</th><th class="px-3 py-2 text-left">Plan</th>
+        <th class="px-3 py-2 text-left">Estado</th><th class="px-3 py-2 text-left">Desde</th></tr>
+    </thead>
+    <tbody>
+      {% for s in subs %}
+      <tr class="border-t"><td class="px-3 py-2">#{{ s.id }}</td>
+        <td class="px-3 py-2">{{ s.plan_name }} ({{ s.plan_code }})</td>
+        <td class="px-3 py-2">{{ s.status }}</td>
+        <td class="px-3 py-2">{{ s.started_at }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if c.status == 'active' %}
+  <form method="post" action="/admin/clients/{{ c.id }}/suspend" class="mt-6 flex gap-2">
+    <input name="reason" required placeholder="Motivo de suspension"
+           class="flex-1 border rounded px-3 py-2 text-sm">
+    <button class="bg-yellow-600 text-white px-4 py-2 rounded text-sm">Suspender</button>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}
