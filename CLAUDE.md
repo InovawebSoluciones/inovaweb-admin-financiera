@@ -293,3 +293,67 @@ pospuesta hasta demanda real.
 - White-label / marca por cliente.
 - Aplicacion movil nativa.
 - Analytics predictivo / ML de churn.
+
+---
+
+## 11. Modelo de trabajo (roles)
+
+- **VPM** (asistente principal): planea, escribe specs en `.vpm/tasks/`, maneja el
+  taskbar, acepta/rechaza entregables. NO escribe codigo de produccion.
+- **Ejecutor** (subagente / Claude Code): implementa segun el spec.
+- **QA, Ciberseguridad, Documentador** (subagentes): revisan cada entrega.
+- Flujo por tarea: spec -> ejecutor -> QA + seguridad -> documentador -> VPM acepta.
+- Instrucciones .txt/.md para el ejecutor: guardarlas en `.vpm/tasks/`, no pegar
+  prompts largos en el chat.
+
+---
+
+## 12. ESTADO ACTUAL Y PENDIENTES (actualizar al cerrar cada sesion)
+
+**Sesion al: 2026-06-04. Foco: piloto PREPAGO de Scraping Universidades.**
+
+Modelo del piloto: cliente elige plan -> paga (Conekta sandbox) -> CAF acredita
+saldo en wallet del Medidor -> consumo IA descuenta -> al agotarse, bloqueo.
+El Medidor core YA implementa prepago (authorize/finish/credit/balance). Identidad:
+CAF clients.id <-> Scraping Company.caf_client_id <-> Company.id <-> wallet
+external_user_id (tenant 'inovaweb'). Detalle completo en memoria del proyecto.
+
+| # | Pendiente | Estado |
+|---|---|---|
+| 15 | Flujo prepago CAF (Hub->wallet) | codigo de #15b aplicado en prepago.py; **verificar en host real**: existe database/004 (indice uq_payments_hub) + correr pytest |
+| 8 | CRUD clientes + API /api/v2 | spec listo (.vpm/tasks/task-08), ejecutor NO lanzado |
+| 16 | Onboarding crea wallet + liga Scraping + activacion correo/WhatsApp | spec listo (.vpm/tasks/task-16), no ejecutado |
+| 18 | Key ADMIN del Medidor | script vps/04 creado; **usuario** lo corre en VPS y pega MEDIDOR_API_KEY en .env del CAF |
+| 19,22 | Hardening (idempotencia BD, retry de finish, filtro company_id explicito, fail-closed en prod, tope monto, rotar Bearer) | backlog antes de multi-cliente |
+| 1 | DNS/TLS admin+app | **usuario** en VPS |
+| 2 | Commit/push (git add -A) | **usuario** decide |
+
+Hechas: #5 (clientes contrato real), #6 (onboarding prepago), #7 (seed planes),
+#14 (identidad), #20 (docs Medidor + ADR), #21 (integracion Scraping<->Medidor).
+
+OJO ENTORNO: OneDrive deja archivos "solo nube"/truncados; el mount Linux no es
+fiable para leer/test. Hidratar y verificar en host real antes de commitear.
+
+---
+
+## 13. ARRANQUE DE SESION (leer al iniciar cada chat de este proyecto)
+
+NO explorar carpetas al arrancar. Leer este CLAUDE.md + la memoria del proyecto
+y responder con:
+  0. PROYECTO: inovaweb-admin-financiera (CAF) — sesion YYYY-MM-DD
+  1. Tabla de pendientes con estado (de la seccion 12, max 8 filas)
+  2. Una linea con el siguiente paso inmediato
+  3. Que le toca al usuario (VPS) vs que ejecuto yo
+  4. ¿Listo para continuar?
+
+PALABRAS CLAVE:
+  siguiente = todo bien, dame el siguiente paso y ejecutalo
+  duda      = tengo una pregunta antes de continuar
+  error     = algo salio mal, ayudame
+  pausa     = recuerdame donde quedamos
+  traslada  = actualiza la seccion 12 de este CLAUDE.md + memoria + dame el
+              comando de commit + cierra sesion
+
+PROTOCOLO "traslada": (1) actualizar seccion 12 con el estado real;
+(2) actualizar la fecha de la sesion; (3) dar comando de commit/push;
+(4) cerrar sesion sin seguir avanzando.

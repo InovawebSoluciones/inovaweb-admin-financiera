@@ -1,0 +1,13 @@
+[
+  "tests/test_health.py::test_liveness",
+  "tests/test_jwt.py::test_access_token_roundtrip",
+  "tests/test_jwt.py::test_refresh_token_type",
+  "tests/test_onboarding.py::test_compensation_deletes_wallet",
+  "tests/test_onboarding.py::test_compensation_skips_delete_when_no_wallet",
+  "tests/test_onboarding.py::test_onboard_client_failure_after_wallet_compensates_and_audits",
+  "tests/test_password.py::test_hash_and_verify_roundtrip",
+  "tests/test_password.py::test_hash_is_random_salt",
+  "tests/test_promotions.py::test_fixed_discount",
+  "tests/test_promotions.py::test_no_discount_when_both_null",
+  "tests/test_promotions.py::test_pct_discount"
+]

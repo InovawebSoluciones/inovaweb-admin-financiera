@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import logging
+import time
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from sqlalchemy import text
@@ -16,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import write_event
 from app.core.config import get_settings
 from app.core.database import get_db
+from app.services.prepago import PrepagoError, process_paid_event
 
 log = logging.getLogger("webhooks")
 router = APIRouter(prefix="/webhooks", tags=["webhooks"])
@@ -23,6 +25,40 @@ router = APIRouter(prefix="/webhooks", tags=["webhooks"])
 
 def _verify_hmac(secret: str, body: bytes, signature: str) -> bool:
     expected = hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature or "")
+
+
+def _verify_signed_timestamp(
+    secret: str,
+    body: bytes,
+    signature: str,
+    timestamp: str,
+    tolerance_sec: int,
+    require_timestamp: bool = False,
+) -> bool:
+    """Verifica firma sobre `<timestamp>.<body>` y la ventana de tiempo.
+
+    Mitiga replay: el Hub firma `f"{timestamp}.{body}"`; se rechaza si el
+    timestamp queda fuera de [now - tolerance, now + tolerance].
+
+    FIX-4 (TASK-15b): en prod (`require_timestamp=True`) se EXIGE el timestamp
+    firmado; si el webhook no lo trae -> False (401), nunca se cae al modo sin
+    ventana anti-replay. En dev/staging, si el Hub NO envia timestamp, se cae al
+    esquema simple `_verify_hmac` para no romper integraciones que no lo
+    soporten todavia.
+    """
+    if not timestamp:
+        if require_timestamp:
+            return False
+        return _verify_hmac(secret, body, signature)
+    try:
+        ts = int(timestamp)
+    except (TypeError, ValueError):
+        return False
+    if abs(time.time() - ts) > tolerance_sec:
+        return False
+    signed = f"{timestamp}.".encode() + body
+    expected = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, signature or "")
 
 
@@ -77,57 +113,38 @@ async def pac_webhook(
 async def hub_payment_paid(
     request: Request,
     x_signature: str = Header(default=""),
+    x_timestamp: str = Header(default=""),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    """Webhook payment.paid del Hub (modelo PREPAGO).
+
+    Orden estricto: VALIDAR FIRMA ANTES de cualquier I/O. Solo despues se parsea
+    el body y se procesa (acreditar wallet del Medidor / liquidar factura). El
+    procesamiento es idempotente por hub_transaction_id (ver services.prepago).
+    """
     body = await request.body()
-    secret = get_settings().HUB_API_KEY.get_secret_value()
-    if not _verify_hmac(secret, body, x_signature):
+    s = get_settings()
+    secret = s.hub_webhook_secret()
+    if not _verify_signed_timestamp(
+        secret, body, x_signature, x_timestamp, s.HUB_WEBHOOK_TOLERANCE_SEC,
+        require_timestamp=(s.ENV == "prod"),
+    ):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "firma invalida")
+
     payload = await request.json()
+    actor_ip = request.client.host if request.client else None
+    request_id = getattr(request.state, "request_id", None)
 
-    hub_account_id = payload["account_id"]
-    amount_cents = int(payload["amount_cents"])
-    hub_payment_id = payload["payment_id"]
-    invoice_id = payload.get("metadata", {}).get("invoice_id")
-
-    # ubicar cliente local por hub_account_id
-    row = (await db.execute(
-        text("SELECT id FROM clients WHERE hub_account_id = :h"),
-        {"h": hub_account_id},
-    )).first()
-    if not row:
-        raise HTTPException(404, "cliente no encontrado para esta cuenta hub")
-    client_id = row[0]
-
-    # idempotencia: si ya registramos este hub_payment_id, salir OK
-    existing = (await db.execute(
-        text("SELECT 1 FROM payments WHERE hub_payment_id = :h"),
-        {"h": hub_payment_id},
-    )).first()
-    if existing:
-        return {"status": "duplicate_ignored"}
-
-    await db.execute(text("""
-        INSERT INTO payments (client_id, invoice_id, amount_cents, currency,
-                              method, hub_payment_id, received_at)
-        VALUES (:c, :i, :a, 'MXN', 'hub_card', :h, now())
-    """), {"c": client_id, "i": invoice_id, "a": amount_cents, "h": hub_payment_id})
-
-    # si liquida una factura, marcarla paid
-    if invoice_id:
-        await db.execute(text("""
-            UPDATE invoices SET status='paid', paid_at=now()
-            WHERE id=:id AND status IN ('stamped','pending_stamp')
-              AND total_cents <= (
-                SELECT COALESCE(sum(amount_cents),0) FROM payments WHERE invoice_id=:id
-              )
-        """), {"id": invoice_id})
-
-    await write_event(
-        db, actor_user_id=None,
-        actor_ip=request.client.host if request.client else None,
-        entity_type="payments", entity_id=None,
-        action="hub.paid", new_values=payload,
-        request_id=getattr(request.state, "request_id", None),
-    )
-    return {"status": "ok"}
+    try:
+        result = await process_paid_event(
+            db, payload, actor_ip=actor_ip, request_id=request_id
+        )
+    except PrepagoError as e:
+        # fallo recuperable: NO perder el pago. Devolver 5xx para que el Hub
+        # reintente; el procesamiento es idempotente y ya se auditó el fallo.
+        log.error("hub_payment_processing_error", extra={"error": str(e)})
+        raise HTTPException(
+            status.HTTP_502_BAD_GATEWAY, "error procesando pago (reintentar)"
+        ) from e
+    return {"status": result.status, "recharge_id": result.recharge_id}
+# TASK-15: webhook hub-payment-paid -> services.prepago.process_paid_event.

@@ -454,28 +454,55 @@ grep PAC_WEBHOOK_SECRET /opt/inovaweb-admin-financiera/.env
 
 ---
 
-### 5.2 Síntoma: recarga del cliente queda colgada (Hub-Pasarelas)
+### 5.2 Síntoma: recarga / compra de plan queda colgada (Hub-Pasarelas)
+
+**Contexto:** el flujo prepago (`app/services/prepago.py`) abre el cargo en el
+Hub con `initiate_charge` (deja `recharge.initiated` en `audit_log` con
+`recharge_id`/`purpose`/`amount_cents`). Al pagar, el Hub manda
+`POST /webhooks/hub-payment-paid`; `process_paid_event` reclama el pago con
+idempotencia BD (`uq_payments_hub`), valida purpose/amount contra el intento y
+acredita la wallet del cliente en el Medidor (`credit`, idempotente por
+`request_id = caf-recharge-{recharge_id}`).
 
 **Diagnóstico:**
 ```sql
-SELECT * FROM recharge_intents
-WHERE status = 'pending'
+-- intento abierto sin pago confirmado
+SELECT * FROM audit_log
+WHERE event_type = 'recharge.initiated'
   AND created_at < now() - interval '15 min'
+ORDER BY id DESC LIMIT 10;
+
+-- ¿llegó el webhook? (pago reclamado en payments)
+SELECT id, hub_payment_id, amount_cents, created_at
+FROM payments
+WHERE hub_payment_id IS NOT NULL
+ORDER BY id DESC LIMIT 10;
+
+-- ¿fue rechazado por purpose/amount distinto al intento? (FIX-2)
+SELECT * FROM audit_log
+WHERE event_type IN ('hub.paid.rejected','hub.paid.failed')
 ORDER BY id DESC LIMIT 10;
 ```
 
 **Fix:**
 - Verificar en el Hub si la transacción fue capturada (puede haber sido
   abandonada por el cliente).
-- Si el Hub la confirma pero el webhook no llegó: reintegrar desde el Hub.
+- Si el Hub la confirma pero el webhook no llegó: reentregar el evento desde el
+  Hub. El reintento es seguro: la idempotencia (BD + `request_id` del Medidor)
+  evita doble cargo / doble crédito / doble correo.
+- Si el webhook fue **rechazado** (`hub.paid.rejected`): el `purpose`/`amount`
+  no coincidió con el intento local → revisar que el metadata enviado al Hub en
+  `initiate_charge` no se haya alterado.
+- Si la firma HMAC o el timestamp fallan (401): validar `HUB_WEBHOOK_SECRET`
+  contra el dashboard del Hub y el reloj del VPS (NTP).
 
 **Verificación:**
 ```sql
-SELECT status, amount_cents, hub_transaction_id
-FROM recharge_intents
-WHERE id = XXX;
+-- el pago quedó reclamado una sola vez
+SELECT count(*) FROM payments WHERE hub_payment_id = '<hub_txn_id>';
 ```
-Debe quedar en `confirmed` y el medidor con crédito aplicado.
+Debe ser exactamente 1, y la wallet del cliente en el Medidor debe reflejar el
+crédito (consultar `GET /v1/wallets/{id}/balance` del Medidor).
 
 ---
 

@@ -6,8 +6,16 @@ Inovaweb que convierte la infraestructura técnica de los 4 cores Nivel 1
 comercial completo: onboarding atómico, catálogos, planes, promociones,
 cobranza con CFDI 4.0, portal cliente, tableros internos.
 
-**Estado:** sprint 1 cerrado (scaffolding + saga de onboarding + auth + workers).
-Próximo sprint: integración real con cores + UI HTMX.
+**Estado:** sprint 1 cerrado (scaffolding + saga de onboarding + auth + workers);
+clientes HTTP a los cores alineados al contrato real y onboarding reescrito a
+modelo **prepago** (recarga de wallet en el Medidor) para el piloto Scraping.
+**En curso (working tree, sin commit):** flujo prepago end-to-end
+`app/services/prepago.py` + webhook `POST /webhooks/hub-payment-paid` (HMAC +
+anti-replay + idempotencia BD) + compra de plan en el portal + seed de planes
+(`database/003`) + índice de idempotencia (`database/004`). Pendiente: cerrar la
+verificación QA de las correcciones #15b, CRUD/API `/api/v2` (#8) y onboarding
+completo con activación email/WhatsApp (#16). Estado de continuidad detallado en
+`docs/HANDOFF-SESION.md`.
 
 ---
 
@@ -56,6 +64,7 @@ cross-domain. Caddy del stack n8n hace TLS y reverse proxy.
 | Router API | `app/routers/api_router.py` | `/api/v2/*` (JSON) |
 | Router webhooks | `app/routers/webhooks_router.py` | `/webhooks/pac`, `/webhooks/hub-payment-paid` |
 | Servicio onboarding | `app/services/onboarding.py` | Saga de alta atómica cross-core |
+| Servicio prepago | `app/services/prepago.py` | Cargo Hub → acreditación wallet Medidor (piloto) |
 | Servicio billing | `app/services/billing.py` | Cierre mensual + cálculo de cargos |
 | Servicio invoicing | `app/services/invoicing.py` | Emisión + timbrado PAC |
 | Servicio promotions | `app/services/promotions.py` | Cupones, descuentos, volumen |
@@ -113,6 +122,9 @@ falla al arrancar (`pydantic-settings` con `Field(...)`).
 | `MEDIDOR_API_KEY` | ✅ | — | Scope `admin`, label `core-admin-financiera` |
 | `HUB_BASE_URL` | ✅ | — | `https://hub.inovaweb.com.mx` |
 | `HUB_API_KEY` | ✅ | — | Scope `*` |
+| `HUB_WEBHOOK_SECRET` | ✅ (prod) | — | Secreto HMAC dedicado del webhook del Hub. Obligatorio en prod (fail-fast); en dev cae a `HUB_API_KEY` |
+| `HUB_WEBHOOK_TOLERANCE_SEC` | — | `300` | Ventana anti-replay del timestamp firmado |
+| `MAX_RECARGA_CENTS` | — | `50000000` | Tope superior de recarga autoservicio (centavos) |
 | `MESSAGES_BASE_URL` | ✅ | — | `https://mensajes.inovaweb.com.mx` |
 | `MESSAGES_API_KEY` | ✅ | — | Scope `*` (admin master) |
 | `FINANZAS_BASE_URL` | ✅ | — | `https://finanzas.inovaweb.com.mx` |
@@ -241,8 +253,12 @@ puertos `8000-8005` están ocupados por los cores Nivel 1 y n8n.
 - `POST /api/v2/billing/run-closing` — trigger manual de cierre
 
 ### 6.5 Webhooks
-- `POST /webhooks/pac` — timbrado exitoso / fallido
-- `POST /webhooks/hub-payment-paid` — recarga confirmada
+- `POST /webhooks/pac` — timbrado exitoso / fallido (diferido con CFDI)
+- `POST /webhooks/hub-payment-paid` — pago confirmado por el Hub-Pasarelas.
+  Verifica HMAC + timestamp firmado (anti-replay), reclama el pago con
+  idempotencia a nivel BD (`uq_payments_hub`), valida `purpose`/`amount` contra
+  el intento local y acredita la wallet del cliente en el Medidor (`credit`,
+  idempotente). Ver `app/services/prepago.py`.
 
 ---
 
@@ -255,11 +271,16 @@ puertos `8000-8005` están ocupados por los cores Nivel 1 y n8n.
   (`database/002_security_constraints.sql`).
 - **Auditoría obligatoria:** cada escritura registra actor, IP, timestamp,
   valor_anterior, valor_nuevo.
-- **Saga atómica de onboarding:** si falla un core, se compensan los
-  anteriores y se registra la falla.
+- **Saga atómica de onboarding (prepago):** el alta crea la wallet del
+  cliente en el Medidor; si falla, se compensa (`delete_wallet`) y la falla
+  queda registrada en `audit_log`. No emite 4 API keys por cliente: los
+  cores son multi-tenant resueltos por la llave admin master del CAF.
 - **Argon2id** para passwords. JWT en cookie httpOnly, SameSite=Strict,
   access 15 min + refresh 30 días con rotación.
-- **CFDI 4.0** vía PAC certificado. Cola de reintento si PAC cae.
+- **Cobro prepago en el piloto:** el cliente recarga su wallet en el Medidor
+  y el consumo se debita en vivo (ADR-010). La cobranza mensual pospago +
+  **CFDI 4.0** vía PAC quedan diferidas hasta seleccionar PAC (el código de
+  cierre/timbrado existe pero no se ejercita en el piloto).
 
 ---
 

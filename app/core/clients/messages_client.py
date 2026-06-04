@@ -1,4 +1,21 @@
-"""Cliente al core Nivel 1 'centro-mensajes' (notificaciones)."""
+"""Cliente al core Nivel 1 'Centro de Mensajes' (notificaciones humanas).
+
+Contrato real (docs/01-admin-financiera-integracion-cores.md §6):
+  - POST /v1/messages/email     envia un correo basado en plantilla del catalogo
+
+NOTAS firmes del contrato (§6.1):
+  - El Centro es multi-tenant: resuelve el tenant desde la API key. NO se crea
+    una "cuenta" por cliente; NO existen create_account / issue_api_key /
+    delete_account (eran invenciones del scaffolding y se eliminaron). SMS queda
+    fuera del piloto (no hay send_sms).
+  - El CAF siempre envia por `origin_kind: "template"` contra plantillas
+    precargadas al setup (§6.2). Las variables tipadas se validan contra el
+    schema del Centro.
+  - El Centro despacha y reporta el cargo al Finanzas-Core con su propia llave;
+    queda reflejado en el balance del cliente.
+  - El endpoint responde 202 Accepted con un `message_id` (persistir para
+    correlacion, §6.4).
+"""
 
 from __future__ import annotations
 
@@ -19,32 +36,87 @@ def make() -> CoreClient:
     )
 
 
+_DEFAULT_FROM: dict[str, str] = {
+    "email": "facturacion@inovaweb.com.mx",
+    "name": "Inovaweb",
+}
+
+
 class MessagesClient:
     def __init__(self, c: CoreClient | None = None):
         self.c = c or make()
 
-    async def create_account(self, *, legal_name: str, rfc: str) -> dict[str, Any]:
-        return await self.c.post("/v1/accounts", json={"legal_name": legal_name, "rfc": rfc})
-
-    async def delete_account(self, account_id: str) -> None:
-        await self.c.delete(f"/v1/accounts/{account_id}")
-
-    async def issue_api_key(self, account_id: str, name: str) -> dict[str, Any]:
-        return await self.c.post(f"/v1/accounts/{account_id}/keys", json={"name": name})
-
     async def send_email(
-        self, *, to: str, subject: str, html: str, account_id: str | None = None
+        self,
+        *,
+        client_id: str,
+        service_id: str,
+        template_id: str,
+        to: dict[str, Any],
+        variables: dict[str, Any],
+        from_: dict[str, Any] | None = None,
+        meta: dict[str, Any] | None = None,
+        app_id: str = "admin-financiera",
     ) -> dict[str, Any]:
-        payload: dict[str, Any] = {"to": to, "subject": subject, "html": html}
-        if account_id:
-            payload["account_id"] = account_id
-        return await self.c.post("/v1/email", json=payload)
+        """POST /v1/messages/email - envia correo desde una plantilla (§6.3).
 
-    async def send_sms(self, *, to: str, body: str, account_id: str | None = None) -> dict[str, Any]:
-        payload: dict[str, Any] = {"to": to, "body": body}
-        if account_id:
-            payload["account_id"] = account_id
-        return await self.c.post("/v1/sms", json=payload)
+        `client_id` es el UUID del cliente CAF; `template_id` el slug del
+        catalogo (§6.2, p.ej. 'caf-factura-emitida'); `to` el destinatario
+        `{email, name}`; `variables` el contexto tipado de la plantilla.
+        `from_` default `{"email": "facturacion@inovaweb.com.mx",
+        "name": "Inovaweb"}`. Devuelve dict con `message_id` (el endpoint
+        responde 202 Accepted; persistirlo para correlacion).
+        """
+        return await self.c.post(
+            "/v1/messages/email",
+            json={
+                "app_id": app_id,
+                "client_id": client_id,
+                "service_id": service_id,
+                "origin_kind": "template",
+                "template_id": template_id,
+                "from": from_ or dict(_DEFAULT_FROM),
+                "to": to,
+                "variables": variables,
+                "meta": meta or {},
+            },
+        )
+
+    async def send_whatsapp(
+        self,
+        *,
+        client_id: str,
+        service_id: str,
+        template_id: str,
+        to: dict[str, Any],
+        variables: dict[str, Any],
+        meta: dict[str, Any] | None = None,
+        app_id: str = "admin-financiera",
+    ) -> dict[str, Any]:
+        """POST /v1/messages/whatsapp - envia WhatsApp desde una plantilla.
+
+        Analogo a `send_email` pero por canal WhatsApp (usado para
+        activacion/OTP y recordatorios de vencimiento). El destinatario `to`
+        se identifica por `{phone, name}`. WhatsApp no lleva remitente `from`
+        (a diferencia del correo). Devuelve dict con `message_id` (el endpoint
+        responde 202 Accepted).
+        """
+        # TODO confirmar endpoint real de WhatsApp con el Centro de Mensajes
+        # (el contrato §6.3 solo documenta el endpoint de email; se asume
+        #  POST /v1/messages/whatsapp con la misma forma de body).
+        return await self.c.post(
+            "/v1/messages/whatsapp",
+            json={
+                "app_id": app_id,
+                "client_id": client_id,
+                "service_id": service_id,
+                "origin_kind": "template",
+                "template_id": template_id,
+                "to": to,
+                "variables": variables,
+                "meta": meta or {},
+            },
+        )
 
     async def close(self) -> None:
         await self.c.close()

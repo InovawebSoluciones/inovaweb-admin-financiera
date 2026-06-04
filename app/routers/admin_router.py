@@ -11,7 +11,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.audit import bind_actor
+from app.core.audit import bind_actor, write_event
 from app.core.database import get_db
 from app.core.jwt_auth import CurrentUser, require_roles
 from app.services.onboarding import OnboardClientPayload, OnboardingError, onboard_client
@@ -156,6 +156,50 @@ async def client_detail(
     )
 
 
+@router.patch("/clients/{cid}")
+async def edit_client(
+    cid: int,
+    request: Request,
+    user: CurrentUser = Depends(_WRITE),
+    db: AsyncSession = Depends(get_db),
+    legal_name: str | None = Form(None),
+    trade_name: str | None = Form(None),
+    cfdi_use: str | None = Form(None),
+    tax_regime: str | None = Form(None),
+    zip_code: str | None = Form(None),
+    billing_email: str | None = Form(None),
+    contact_phone: str | None = Form(None),
+):
+    """Edita datos comerciales/fiscales del cliente (NO el RFC ni los ids cross-core).
+
+    Solo se actualizan los campos enviados (COALESCE a valor actual). La UPDATE
+    sobre `clients` dispara el trigger de auditoria (action='update', old/new) que
+    lee el actor desde las variables de sesion fijadas por bind_actor.
+    """
+    await bind_actor(db, actor_user_id=user.id,
+                      actor_ip=request.client.host if request.client else None,
+                      request_id=getattr(request.state, "request_id", None))
+    res = await db.execute(text("""
+        UPDATE clients SET
+          legal_name    = COALESCE(:ln, legal_name),
+          trade_name    = COALESCE(:tn, trade_name),
+          cfdi_use      = COALESCE(:cu, cfdi_use),
+          tax_regime    = COALESCE(:tr, tax_regime),
+          zip_code      = COALESCE(:zp, zip_code),
+          billing_email = COALESCE(:be, billing_email),
+          contact_phone = COALESCE(:cp, contact_phone),
+          updated_at    = now()
+        WHERE id = :id
+        RETURNING id
+    """), {
+        "ln": legal_name, "tn": trade_name, "cu": cfdi_use, "tr": tax_regime,
+        "zp": zip_code, "be": billing_email, "cp": contact_phone, "id": cid,
+    })
+    if res.first() is None:
+        raise HTTPException(404, "cliente no existe")
+    return RedirectResponse(f"/admin/clients/{cid}", status_code=303)
+
+
 @router.post("/clients/{cid}/suspend")
 async def suspend_client(
     cid: int,
@@ -167,11 +211,80 @@ async def suspend_client(
     await bind_actor(db, actor_user_id=user.id,
                       actor_ip=request.client.host if request.client else None,
                       request_id=getattr(request.state, "request_id", None))
-    await db.execute(text("""
+    res = await db.execute(text("""
         UPDATE clients SET status='suspended', suspended_at=now(), suspended_reason=:r,
           updated_at=now()
         WHERE id=:id AND status='active'
+        RETURNING id
     """), {"id": cid, "r": reason})
+    if res.first() is None:
+        raise HTTPException(409, "cliente inexistente o no esta activo")
+    # evento explicito de ciclo de vida (ademas del 'update' automatico del trigger)
+    await write_event(
+        db, actor_user_id=user.id,
+        actor_ip=request.client.host if request.client else None,
+        entity_type="clients", entity_id=cid, action="suspend",
+        new_values={"status": "suspended", "reason": reason},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    return RedirectResponse(f"/admin/clients/{cid}", status_code=303)
+
+
+@router.post("/clients/{cid}/reactivate")
+async def reactivate_client(
+    cid: int,
+    request: Request,
+    user: CurrentUser = Depends(_WRITE),
+    db: AsyncSession = Depends(get_db),
+):
+    """Reactiva un cliente suspendido -> status='active', limpia suspended_*."""
+    await bind_actor(db, actor_user_id=user.id,
+                      actor_ip=request.client.host if request.client else None,
+                      request_id=getattr(request.state, "request_id", None))
+    res = await db.execute(text("""
+        UPDATE clients SET status='active', suspended_at=NULL, suspended_reason=NULL,
+          updated_at=now()
+        WHERE id=:id AND status='suspended'
+        RETURNING id
+    """), {"id": cid})
+    if res.first() is None:
+        raise HTTPException(409, "cliente inexistente o no esta suspendido")
+    await write_event(
+        db, actor_user_id=user.id,
+        actor_ip=request.client.host if request.client else None,
+        entity_type="clients", entity_id=cid, action="reactivate",
+        new_values={"status": "active"},
+        request_id=getattr(request.state, "request_id", None),
+    )
+    return RedirectResponse(f"/admin/clients/{cid}", status_code=303)
+
+
+@router.post("/clients/{cid}/cancel")
+async def cancel_client(
+    cid: int,
+    request: Request,
+    user: CurrentUser = Depends(_WRITE),
+    db: AsyncSession = Depends(get_db),
+    reason: str = Form(...),
+):
+    """Baja del cliente -> status='cancelled' (estado terminal). Auditado."""
+    await bind_actor(db, actor_user_id=user.id,
+                      actor_ip=request.client.host if request.client else None,
+                      request_id=getattr(request.state, "request_id", None))
+    res = await db.execute(text("""
+        UPDATE clients SET status='cancelled', suspended_reason=:r, updated_at=now()
+        WHERE id=:id AND status <> 'cancelled'
+        RETURNING id
+    """), {"id": cid, "r": reason})
+    if res.first() is None:
+        raise HTTPException(409, "cliente inexistente o ya cancelado")
+    await write_event(
+        db, actor_user_id=user.id,
+        actor_ip=request.client.host if request.client else None,
+        entity_type="clients", entity_id=cid, action="cancel",
+        new_values={"status": "cancelled", "reason": reason},
+        request_id=getattr(request.state, "request_id", None),
+    )
     return RedirectResponse(f"/admin/clients/{cid}", status_code=303)
 
 

@@ -127,7 +127,8 @@ async def _close_one_subscription(
         try:
             usage = await medidor.get_usage(
                 sub["medidor_account_id"],
-                period_start.isoformat(), period_end.isoformat(),
+                from_ts=period_start.isoformat(),
+                to_ts=period_end.isoformat(),
             )
         except Exception as e:
             log.warning("usage_fetch_failed", extra={

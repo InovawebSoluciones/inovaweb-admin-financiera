@@ -7,6 +7,166 @@ Orden cronológico inverso: lo más reciente primero.
 
 ---
 
+## [0.3.0] — 2026-06-04 — Flujo prepago end-to-end (Hub → wallet) + idempotencia + hardening
+
+> ⚠️ **Nada de esta entrada está commiteado todavía.** Los cambios viven en el
+> working tree de tres repos (CAF, Medidor, Scraping). Esta entrada documenta el
+> estado real del árbol del CAF para que otro chat pueda retomar (ver
+> `docs/HANDOFF-SESION.md`). El comando de commit se entrega al final de la
+> sesión de documentación.
+
+### Agregado
+- `app/services/prepago.py` — servicio del flujo prepago del piloto Scraping:
+  - `initiate_charge(...)` abre el cargo en el Hub-Pasarelas (Conekta sandbox)
+    para `purpose ∈ {plan_purchase, wallet_recharge}`, deja
+    `recharge.initiated` en `audit_log` con `recharge_id` + `purpose` +
+    `amount_cents` (correlación posterior con el webhook).
+  - `extract_event(payload)` parseo robusto del evento `payment.paid`
+    (FIX-7: `amount` mal formado → `PrepagoError`, no 500 sin controlar).
+  - `process_paid_event(...)` acredita la wallet del cliente en el Medidor
+    (`credit`, idempotente por `request_id = caf-recharge-{recharge_id}`),
+    postea el asiento en Finanzas (`source_ref = caf-recharge-{recharge_id}`)
+    y dispara correo de confirmación vía Centro de Mensajes.
+- `app/routers/webhooks_router.py` — `POST /webhooks/hub-payment-paid`:
+  verifica HMAC tiempo-constante sobre el body, valida timestamp firmado
+  (ventana anti-replay), y delega a `process_paid_event`. Validación antes de
+  cualquier I/O.
+- `database/004_payments_idempotency.sql` — índice ÚNICO PARCIAL
+  `uq_payments_hub ON payments(hub_payment_id) WHERE hub_payment_id IS NOT NULL`.
+  Es un índice (no muta filas) → no viola el append-only de `002`.
+- `database/003_seed_scraping_plans.sql` — seed del catálogo de planes del
+  piloto Scraping en centavos: free `10000`, básico `9900`, medio `20000`,
+  premium `40000`.
+- Config (`app/core/config.py`): `HUB_WEBHOOK_SECRET` (obligatorio en prod via
+  validator, FIX-3), `HUB_WEBHOOK_TOLERANCE_SEC`, `MAX_RECARGA_CENTS` (FIX-6),
+  `CAF_PAGO_CONFIRMADO_TEMPLATE`, `CAF_MESSAGES_SERVICE_ID`.
+- `app/routers/portal_router.py`: `POST /portal/recharge` y compra de plan que
+  abren el flujo en el Hub.
+- Tests: `tests/test_hub_webhook.py` (replay/concurrencia, firma, purpose/amount).
+
+### Corregido / Endurecido (correcciones QA TASK-15b)
+- **FIX-1 — Idempotencia a nivel BD.** El no-duplicado del pago vive en la BD
+  (`INSERT ... ON CONFLICT (hub_payment_id) DO NOTHING`), no en un SELECT
+  previo. Dos webhooks concurrentes/repetidos con el mismo `hub_transaction_id`
+  acreditan y notifican una sola vez (`status='duplicate_ignored'`, 200).
+- **FIX-2 — Correlación purpose/amount contra el intento local.** Antes de
+  acreditar, el webhook se cruza por `recharge_id` con el `recharge.initiated`
+  previo y valida `purpose` + `amount_cents`. Si no hay intento o no coincide →
+  rechazo sin acreditar + audit `hub.paid.rejected`.
+- **FIX-3 / FIX-4** — `HUB_WEBHOOK_SECRET` obligatorio en prod (no fallback a
+  `HUB_API_KEY`); timestamp firmado exigido en prod.
+- **FIX-5** — el portal ya no propaga errores crudos del core al cliente
+  (mensaje genérico; detalle solo server-side).
+- **FIX-6** — tope de monto de recarga autoservicio (`5000` ≤ monto ≤
+  `MAX_RECARGA_CENTS`).
+- **FIX-7** — parseo defensivo de `amount` en `extract_event`.
+
+### Estado / pendiente de verificación
+- QA había **rechazado** la primera versión de TASK-15 por faltar FIX-1
+  (UNIQUE parcial) y FIX-2 (validar purpose/amount). El árbol actual **ya
+  contiene** FIX-1…FIX-7. **Falta re-correr la verificación de QA** (compileall,
+  001+002+003+004 sobre Postgres limpio, `pytest`) sobre este árbol antes de
+  declarar #15b cerrado. Ver `docs/HANDOFF-SESION.md`.
+- Specs escritos **sin ejecutar** o pendientes de cierre formal: #15b
+  (correcciones prepago — verificar), #8 (CRUD/API `/api/v2`), #16 (onboarding
+  crea wallet + liga Scraping + activación email/WhatsApp).
+
+### Integración cross-repo (no en este repo)
+- Medidor (Nivel 1): script `vps/04` para emitir la API key con scope `ADMIN`
+  (label `core-admin-financiera`) que el CAF necesita en `.env`.
+- Scraping (Nivel 3): `medidor_client.py` + `authorize`/`finish` en
+  `semantic_search`; migración `0004` con `Company.medidor_wallet_id` y
+  `search_sessions.medidor_hold_id` / `medidor_status`.
+
+---
+
+## [0.2.1] — 2026-06-03 — Contrato del Medidor al API real + ADR del modelo prepago
+
+### Cambiado
+- `docs/01-admin-financiera-integracion-cores.md` §3 (Integración con Medidor
+  IA): reescrito al **API real** del Medidor (confirmado leyendo su código).
+  Documenta la wallet prepago autoritativa con identidad
+  `(tenant_id, external_user_id)` UNIQUE; los endpoints `ADMIN` que invoca el
+  CAF (`POST /v1/wallets`, `POST /v1/wallets/{id}/credit` idempotente por
+  `request_id`, `GET /v1/wallets/{id}/balance` con `balance_cents`/`holds_total`/
+  `disponible_cents`, `GET /v1/usage`, suspend/unsuspend); los endpoints
+  `CLIENT` del consumidor como referencia (`operations/authorize` que crea HOLD
+  y valida saldo, `finish`, `release`, `quote`, `events/track`, `events/refund`);
+  scopes `ADMIN`/`CLIENT`; ledger append-only `wallet_transactions` con balance
+  materializado y locking optimista. Aclara que **el bloqueo por saldo
+  insuficiente lo impone `authorize`** y que el CAF nunca debita.
+
+### Agregado
+- `docs/ADR.md` ADR-011: **El Medidor core es la wallet prepago autoritativa
+  (authorize/finish/credit) y mapeo de identidad del piloto Scraping.**
+  Registra el reparto por scope (CAF=ADMIN crea+recarga, Scraping=CLIENT
+  authorize→finish) y el mapeo `CAF clients.id ↔ Company.caf_client_id ↔
+  Company.id (=company_id) ↔ wallet external_user_id` bajo tenant `inovaweb`.
+  Scraping no tenía integración con el Medidor; se wirea en TASK-21.
+
+### Renumeración
+- Los placeholders previos ADR-011/012/013 (PAC concreto, backups, 2FA) se
+  renumeran a ADR-012/013/014.
+
+### Sin cambios de código
+Versión documental. No introduce migraciones SQL ni cambios de contrato HTTP.
+No toca `app/` ni `tests/`.
+
+---
+
+## [0.2.0] — 2026-06-03 — Clientes al contrato real + onboarding PREPAGO
+
+### Cambiado
+- `app/core/clients/finanzas_client.py`: reescrito al contrato real del
+  Finanzas-Core (`docs/01-admin-financiera-integracion-cores.md` §5). El
+  `tenant_id` se resuelve desde la API key admin master; la vista por cliente
+  se filtra por `external_user_id` en `meta`. Métodos: `get_balance`,
+  `get_totals`, `list_entries`, `post_entry` (con `source_ref`
+  determinístico documentado en docstring). **Se eliminaron** los métodos
+  inventados `create_account`, `delete_account`, `issue_api_key` y los
+  `post_charge`/`post_credit` viejos: el CAF jamás crea cuentas ni emite
+  llaves en el Finanzas-Core.
+- `app/core/clients/messages_client.py`: reescrito al contrato real del
+  Centro de Mensajes (§6). `send_email` con `origin_kind="template"` y
+  `from` por defecto `facturacion@inovaweb.com.mx`; `send_whatsapp` análogo
+  (endpoint marcado con `# TODO confirmar` por estar fuera del contrato
+  documentado). **Se eliminaron** `create_account`, `delete_account`,
+  `issue_api_key` y `send_sms` (SMS fuera del piloto).
+- `app/services/onboarding.py`: la saga de alta pasa a modelo **PREPAGO**.
+  El alta solo toca el **Medidor** para crear la wallet del cliente
+  (`create_wallet(external_user_id="client-<id>", ...)`) y guarda su `id` en
+  `clients.medidor_account_id`; el resto de cores son multi-tenant resueltos
+  por la llave (hub se configura por SQL). Ya no se crean cuentas ni se
+  emiten 4 API keys por cliente. `OnboardResult.api_keys` se reemplaza por
+  `wallet_id`. La compensación ante fallo posterior a la wallet sigue siendo
+  `delete_wallet` (best-effort) + rollback local.
+
+### Corregido
+- **Auditoría de fallo de onboarding ahora sí persiste.** En las ramas de
+  fallo, el evento `onboard_failed` se escribía después del `rollback()` y
+  era descartado por el rollback final de `get_db`, dejando la falla sin
+  rastro en `audit_log`. Ahora se persiste en una transacción independiente
+  con commit explícito. El password temporal sigue sin escribirse en el
+  audit. Cubierto por nuevo test del saga en `tests/test_onboarding.py`
+  (path de fallo tras crear la wallet: dispara compensación + persiste el
+  audit).
+- `app/services/billing.py`: corregido el llamador de
+  `MedidorClient.get_usage`, ahora keyword-only
+  (`get_usage(wallet_id, *, from_ts, to_ts)`). Se actualizó la llamada en el
+  cierre mensual a la firma nueva.
+- `app/core/clients/messages_client.py`: eliminados bytes NUL finales que
+  rompían `compileall` en un clone limpio o build Docker.
+
+### Notas de alcance
+- El reordenamiento del disparo del alta (que ocurra **después** del pago
+  confirmado) pertenece a las tareas de piloto #15/#16; aquí `onboard_client`
+  sigue siendo una función invocable.
+- La facturación mensual + CFDI 4.0 vía PAC queda **diferida** para el
+  piloto Scraping (ver `docs/ADR.md` ADR-010). El modelo del piloto es
+  prepago por recarga de wallet.
+
+---
+
 ## [0.1.1] — 2026-06-03 — Clarificación del rol del medidor IA
 
 ### Cambiado

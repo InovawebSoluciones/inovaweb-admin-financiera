@@ -10,7 +10,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import bind_actor
-from app.core.clients.finanzas_client import FinanzasClient
+from app.core.clients.medidor_client import MedidorClient
 from app.core.database import get_db
 from app.core.jwt_auth import CurrentUser, require_roles
 from app.services.onboarding import OnboardClientPayload, OnboardingError, onboard_client
@@ -44,7 +44,7 @@ class CreateClientResponse(BaseModel):
     client_id: int
     user_id: int
     temp_password: str
-    api_keys: dict[str, str]
+    wallet_id: str
 
 
 @router.post("/clients", response_model=CreateClientResponse,
@@ -70,7 +70,7 @@ async def api_create_client(
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e)) from e
     return CreateClientResponse(
         client_id=r.client_id, user_id=r.user_id,
-        temp_password=r.temp_password, api_keys=r.api_keys,
+        temp_password=r.temp_password, wallet_id=r.wallet_id,
     )
 
 
@@ -80,20 +80,28 @@ async def api_client_balance(
     user: CurrentUser = Depends(_READ),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    """Saldo consolidado del cliente.
+
+    En el modelo PREPAGO la fuente de verdad del saldo es la WALLET del Medidor
+    (provisionada en el alta). Se lee con medidor.get_balance(medidor_account_id);
+    el CAF nunca duplica el saldo. Si el cliente aun no tiene wallet, se reporta 0.
+    """
     c = (await db.execute(
-        text("SELECT finanzas_account_id, status FROM clients WHERE id=:id"),
+        text("SELECT medidor_account_id, status FROM clients WHERE id=:id"),
         {"id": cid},
     )).mappings().first()
     if not c:
         raise HTTPException(404, "cliente no existe")
-    if not c["finanzas_account_id"]:
-        return {"client_id": cid, "balance_cents": 0, "note": "no provisionado en finanzas"}
-    fin = FinanzasClient()
+    if not c["medidor_account_id"]:
+        return {"client_id": cid, "status": c["status"],
+                "balance_cents": 0, "note": "sin wallet provisionada en medidor"}
+    medidor = MedidorClient()
     try:
-        bal = await fin.get_balance(c["finanzas_account_id"])
+        bal = await medidor.get_balance(c["medidor_account_id"])
     finally:
-        await fin.close()
-    return {"client_id": cid, "status": c["status"], **bal}
+        await medidor.close()
+    return {"client_id": cid, "status": c["status"],
+            "wallet_id": c["medidor_account_id"], **bal}
 
 
 # ---------------------------------------------------------------------
@@ -152,15 +160,24 @@ async def api_income_report(
 # ---------------------------------------------------------------------
 
 
-@router.post("/billing/run-closing")
+@router.post("/billing/run-closing", status_code=status.HTTP_501_NOT_IMPLEMENTED)
 async def api_run_closing(
     request: Request,
     user: CurrentUser = Depends(require_roles("super_admin")),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
+    """Trigger manual del cierre mensual.
+
+    STUB (501) para el piloto PREPAGO: no hay cierre mensual porque el cobro es
+    por recarga anticipada de wallet (no postpago). El endpoint queda expuesto y
+    auditado para conservar el contrato del API; el cierre real (Fase 4: cargos
+    de suscripcion + factura CFDI 4.0 via PAC) se habilitara con run_monthly_closing.
+    """
     await bind_actor(db, actor_user_id=user.id,
                       actor_ip=request.client.host if request.client else None,
                       request_id=getattr(request.state, "request_id", None))
-    from app.services.billing import run_monthly_closing
-    summary = await run_monthly_closing(db)
-    return {"status": "ok", "summary": summary}
+    return {
+        "status": "not_implemented",
+        "detail": "cierre mensual no aplica en el modelo prepago del piloto; "
+                  "se habilita en Fase 4 (postpago + CFDI)",
+    }

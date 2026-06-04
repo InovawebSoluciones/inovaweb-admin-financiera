@@ -42,7 +42,9 @@ nano .env
 # - JWT_SECRET / AES_KEY: 32 bytes URL-safe (generar con secrets.token_urlsafe(32))
 # - POSTGRES_PASSWORD: fuerte
 # - URLs y API keys de los 4 cores Nivel 1
-# - credenciales del PAC
+#   (MEDIDOR_API_KEY con scope ADMIN, label core-admin-financiera; emitir con vps/04 del Medidor)
+# - HUB_WEBHOOK_SECRET: secreto HMAC dedicado del webhook del Hub (OBLIGATORIO en prod)
+# - credenciales del PAC (diferidas mientras el piloto sea prepago)
 # - RFC_EMISOR
 
 # 3. colocar CSD (sólo prod)
@@ -126,6 +128,22 @@ Si falla 7–10, evaluar caso por caso; pueden no requerir rollback.
 ---
 
 ## 4. Migraciones SQL
+
+### 4.0 Migraciones del piloto prepago (003 + 004)
+
+Al desplegar el flujo prepago por primera vez, aplicar en orden tras `001`+`002`:
+
+- `database/003_seed_scraping_plans.sql` — seed de planes del piloto Scraping
+  (free `10000` / básico `9900` / medio `20000` / premium `40000` centavos).
+- `database/004_payments_idempotency.sql` — índice ÚNICO PARCIAL
+  `uq_payments_hub` (idempotencia del webhook del Hub). Idempotente
+  (`IF NOT EXISTS`); no viola append-only.
+
+Verificar el índice tras aplicar:
+```bash
+docker exec caf_postgres psql -U caf -d admin_financiera \
+  -c "\d payments" | grep uq_payments_hub
+```
 
 ### 4.1 Regla crítica
 

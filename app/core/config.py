@@ -7,7 +7,7 @@ Toda variable obligatoria sin default falla al arrancar -> fail fast.
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -64,7 +64,48 @@ class Settings(BaseSettings):
     HTTP_TIMEOUT_SEC: float = 10.0
     HTTP_RETRIES: int = 3
 
+    # --- webhooks Hub-Pasarelas ---
+    # Secreto HMAC dedicado para validar la firma del webhook del Hub.
+    # FIX-3 (TASK-15b): en prod es OBLIGATORIO (validator de abajo falla el
+    # arranque si falta). En dev/staging, si no se define uno dedicado, se
+    # reusa HUB_API_KEY (firma con la misma llave compartida) solo para no
+    # bloquear el desarrollo local.
+    HUB_WEBHOOK_SECRET: SecretStr | None = None
+    # Tolerancia (segundos) de la marca de tiempo firmada para mitigar replay.
+    HUB_WEBHOOK_TOLERANCE_SEC: int = 300
+    # FIX-6 (TASK-15b): tope superior del monto de recarga autoservicio
+    # (centavos MXN, BIGINT). El minimo (5000 = $50) vive en el router.
+    MAX_RECARGA_CENTS: int = 50_000_000  # $500,000 MXN
+    # Plantilla y service del Centro de Mensajes para confirmar pago/recarga.
+    CAF_PAGO_CONFIRMADO_TEMPLATE: str = "caf-pago-confirmado"
+    CAF_MESSAGES_SERVICE_ID: str = "caf-notificaciones"
+
+    @model_validator(mode="after")
+    def _require_webhook_secret_in_prod(self) -> "Settings":
+        """FIX-3: en prod, HUB_WEBHOOK_SECRET es obligatorio (fail fast).
+
+        No se permite el fallback a HUB_API_KEY en produccion: la firma del
+        webhook debe verificarse con un secreto dedicado.
+        """
+        if self.ENV == "prod" and self.HUB_WEBHOOK_SECRET is None:
+            raise ValueError(
+                "HUB_WEBHOOK_SECRET es obligatorio en prod "
+                "(no se permite fallback a HUB_API_KEY)"
+            )
+        return self
+
+    def hub_webhook_secret(self) -> str:
+        """Secreto efectivo para verificar la firma del webhook del Hub.
+
+        En prod siempre devuelve HUB_WEBHOOK_SECRET (garantizado por el
+        validator). En dev/staging cae a HUB_API_KEY si no hay dedicado.
+        """
+        if self.HUB_WEBHOOK_SECRET is not None:
+            return self.HUB_WEBHOOK_SECRET.get_secret_value()
+        return self.HUB_API_KEY.get_secret_value()
+
 
 @lru_cache(maxsize=1)
 def get_settings() -> Settings:
     return Settings()  # type: ignore[call-arg]
+# TASK-15: settings de webhook Hub-Pasarelas agregados arriba.

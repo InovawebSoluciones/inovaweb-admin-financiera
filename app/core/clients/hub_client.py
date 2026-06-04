@@ -1,4 +1,16 @@
-"""Cliente al core Nivel 1 'hub-pasarelas' (cobros)."""
+"""Cliente al core Nivel 1 'Hub de Pasarelas' (cobros).
+
+Contrato real (docs/01-admin-financiera-integracion-cores.md §4):
+  - POST /hub/v1/charge   inicia un cobro (recarga o pago de factura)
+
+NOTAS firmes del contrato:
+  - El Hub NO tiene endpoint admin de alta de empresa. La config de pasarela
+    del cliente se inserta por SQL durante el alta (pendiente: el Hub debe
+    exponer POST /admin/hub/v1/companies). Por eso este cliente NO crea cuentas.
+  - El CAF nunca toca tarjetas. El Hub procesa el pago y devuelve webhook
+    payment.paid a /webhooks/hub-payment-paid.
+  - Idempotencia: UNIQUE por hub_transaction_id en la tabla payments del CAF.
+"""
 
 from __future__ import annotations
 
@@ -23,28 +35,31 @@ class HubClient:
     def __init__(self, c: CoreClient | None = None):
         self.c = c or make()
 
-    async def create_account(self, *, legal_name: str, rfc: str, email: str) -> dict[str, Any]:
-        return await self.c.post(
-            "/v1/accounts",
-            json={"legal_name": legal_name, "rfc": rfc, "email": email},
-        )
-
-    async def delete_account(self, account_id: str) -> None:
-        await self.c.delete(f"/v1/accounts/{account_id}")
-
-    async def issue_api_key(self, account_id: str, name: str) -> dict[str, Any]:
-        return await self.c.post(f"/v1/accounts/{account_id}/keys", json={"name": name})
-
-    async def create_payment_intent(
-        self, account_id: str, *, amount_cents: int, concept: str, return_url: str
+    async def charge(
+        self,
+        *,
+        external_user_id: str,
+        amount_cents: int,
+        description: str,
+        metadata: dict[str, Any],
+        gateway: str = "conekta",
     ) -> dict[str, Any]:
+        """POST /hub/v1/charge.
+
+        `metadata.purpose` distingue el flujo en el webhook:
+          - 'plan_purchase' / 'wallet_recharge' -> acreditar saldo en Medidor
+          - 'invoice_payment'                   -> marcar factura pagada
+        `amount` va en centavos (BIGINT). Devuelve datos del intento de cobro.
+        """
         return await self.c.post(
-            f"/v1/accounts/{account_id}/payment-intents",
+            "/hub/v1/charge",
             json={
-                "amount_cents": amount_cents,
+                "gateway": gateway,
+                "external_user_id": external_user_id,
+                "amount": amount_cents,
                 "currency": "MXN",
-                "concept": concept,
-                "return_url": return_url,
+                "description": description,
+                "metadata": metadata,
             },
         )
 

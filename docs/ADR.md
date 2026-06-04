@@ -370,14 +370,159 @@ sin recalcular.
 
 ---
 
+## ADR-010: El modelo del piloto Scraping es PREPAGO (recarga de wallet); la facturación mensual + CFDI se difiere
+
+**Fecha:** 2026-06-03
+**Estado:** Aprobado
+
+### Contexto
+El primer cliente real del CAF es la app Nivel 3 **Scraping**. El diseño
+original del CAF (CLAUDE.md, fases 4 y 5) asume cobranza **pospago**: cierre
+mensual nocturno que mide el consumo del periodo, aplica plan + promociones y
+emite una factura CFDI 4.0 timbrada vía PAC. Ese flujo exige tener un PAC
+seleccionado y certificados CSD operativos, decisión que aún no se toma (la selección
+de PAC vive como pendiente al final de este documento).
+
+Para arrancar el piloto sin bloquearlo en la selección de PAC, hay que decidir
+el modelo de cobro del piloto.
+
+### Decisión
+**El piloto Scraping opera en modelo PREPAGO.** El cliente **recarga su wallet
+en el Medidor** (vía Hub-Pasarelas, Conekta sandbox) y el consumo de IA se
+debita de ese saldo en vivo por el propio Medidor (ver ADR-009). No hay cierre
+mensual ni emisión de factura en el piloto.
+
+Consecuencias en el onboarding y los clientes de cores:
+- El alta atómica (`app/services/onboarding.py`) solo crea la **wallet** del
+  cliente en el Medidor; no factura ni programa cobranza mensual.
+- Los clientes HTTP a Finanzas-Core y Centro de Mensajes son de **lectura /
+  emisión** según el contrato real (`docs/01-admin-financiera-integracion-cores.md`),
+  sin creación de cuentas ni emisión de llaves por cliente.
+- El cierre mensual (`app/services/billing.py`), el timbrado CFDI
+  (`app/services/invoicing.py`) y el adapter de PAC permanecen en el código
+  pero **no se ejercitan en el piloto**.
+
+### Alternativas consideradas
+- **Pospago con CFDI desde el día 1:** descartado para el piloto porque
+  bloquea el arranque hasta seleccionar PAC, certificar CSD y validar
+  timbrado. Demasiado riesgo para un primer cliente.
+- **Pospago sin CFDI (factura informal):** descartado porque mezcla el flujo
+  pospago a medias y no reduce el trabajo respecto a esperar al PAC.
+
+### Consecuencias
+- ✅ El piloto arranca sin depender de la selección de PAC ni de certificados
+  fiscales.
+- ✅ Riesgo de impago nulo: el cliente paga antes de consumir; al agotarse el
+  saldo se bloquea el consumo (tarea de control de consumo del piloto).
+- ✅ Reutiliza ADR-009 (el Medidor es la fuente única del costo de IA y ya
+  debita el wallet en vivo).
+- ⚠️ La facturación mensual + CFDI 4.0 queda **diferida**. Cuando se active
+  pospago para clientes que lo requieran, se retoman las fases 4–5 y se
+  selecciona el PAC (pendiente más abajo). Esta decisión no elimina ese
+  código, solo no lo ejercita en el piloto.
+
+---
+
+## ADR-011: El Medidor core es la wallet prepago autoritativa (authorize/finish/credit) y mapeo de identidad del piloto Scraping
+
+**Fecha:** 2026-06-03
+**Estado:** Aprobado
+
+### Contexto
+Confirmado leyendo el código real del Medidor (no la descripción previa del
+contrato del CAF, que estaba desactualizada): el Medidor (Nivel 1) ya implementa
+prepago completo. Expone wallets con identidad `(tenant_id, external_user_id)`
+UNIQUE, un par de operaciones `authorize → finish` para reservar y cobrar saldo,
+`credit` para recargar, un ledger append-only (`wallet_transactions`), balance
+materializado con locking optimista e idempotencia por `UNIQUE(wallet_id,
+request_id)`. La autenticación es por API key con dos scopes: `CLIENT`
+(`authorize`/`finish`/`track`) y `ADMIN` (`create`/`credit`/`suspend`).
+
+El piloto del CAF es la app Nivel 3 **Scraping**, que **no tenía integración
+con el Medidor**. Había que decidir (a) qué pieza es la autoridad del saldo y
+del cobro, y (b) cómo se mapea la identidad del cliente entre CAF, Scraping y la
+wallet del Medidor, sin lo cual el alta atómica y la recarga no pueden apuntar
+a la wallet correcta.
+
+### Decisión
+**El Medidor core es la wallet prepago autoritativa.** El saldo, su validación
+y su débito viven en el Medidor; ninguna otra pieza recalcula ni duplica saldo.
+El reparto de responsabilidades por scope es:
+
+- **CAF (scope `ADMIN`):** crea la wallet en el alta del cliente y la **acredita**
+  (`credit`) cuando el Hub confirma una recarga. No consume ni cobra.
+- **Scraping (scope `CLIENT`):** ejecuta `authorize → finish` por operación.
+  `authorize` crea el HOLD y valida el saldo; **el bloqueo por saldo insuficiente
+  lo impone `authorize` al rechazar**, no el CAF. `finish` captura el hold y
+  descuenta el saldo.
+
+**Mapeo de identidad (cross-core):**
+
+```
+CAF clients.id
+   │  (FK lógica)
+   ▼
+Company.caf_client_id      (en la BD de Scraping)
+   │
+   ▼
+Company.id  (= company_id)  ──►  wallet external_user_id
+                                  bajo tenant_id = "inovaweb", proyecto "scraping"
+```
+
+Es decir, la wallet del cliente se identifica por `(tenant_id="inovaweb",
+external_user_id=Company.id)`. El CAF guarda el `id` de wallet devuelto por el
+Medidor en `clients.medidor_account_id`.
+
+**Scraping se wirea al Medidor en TASK-21** (pre-check de saldo con `authorize`
+y reporte de costo con `finish`). Esta decisión define el contrato; el cableado
+del consumidor es trabajo aparte.
+
+### Alternativas consideradas
+- **CAF como autoridad del saldo (wallet local en la BD del CAF):** descartado.
+  Duplicaría el saldo que el Medidor ya mantiene y debita en vivo (ADR-009),
+  produciendo saldos contradictorios entre el wallet del Medidor y el del CAF.
+- **`external_user_id = clients.id` del CAF directamente:** descartado. El
+  consumidor que cobra es Scraping, que razona en términos de su propio
+  `Company.id`; usar el id del CAF obligaría a Scraping a conocer la identidad
+  interna del CAF en cada `authorize`. El mapeo indirecto vía
+  `Company.caf_client_id` mantiene a cada sistema con su propia clave primaria.
+- **Una wallet por proyecto en lugar de por cliente:** descartado; impide
+  saldo y bloqueo por cliente individual, que es justo lo que el piloto necesita.
+
+### Consecuencias
+- ✅ Una sola autoridad de saldo y cobro: el Medidor. Cero divergencia de saldo.
+- ✅ El bloqueo por saldo agotado es automático y vive donde debe (en
+  `authorize` del Medidor), no en lógica frágil del CAF o de Scraping.
+- ✅ Idempotencia garantizada en recarga (`credit`) y cobro (`finish`) por
+  `UNIQUE(wallet_id, request_id)`; un webhook o reintento duplicado no
+  duplica dinero.
+- ✅ Cada sistema conserva su clave primaria; el mapeo es explícito y auditable.
+- ⚠️ El CAF depende de que Scraping ejecute `authorize/finish` correctamente.
+  Si Scraping consume sin `authorize`, no hay débito. Mitigación: el cableado
+  de TASK-21 hace el `authorize` obligatorio antes de cada operación cobrable.
+- ⚠️ El alta del cliente debe completarse (wallet creada + `caf_client_id`
+  seteado en `Company`) antes de que Scraping pueda cobrar. Mitigación: la
+  saga de onboarding (ADR-002) crea la wallet y el orden lo cubren las tareas
+  de piloto.
+
+### Cómo se ve en el CAF
+- `app/core/clients/medidor_client.py` expone, con scope `ADMIN`, creación de
+  wallet, `credit` por recarga confirmada y lecturas de balance/usage. **No
+  expone `authorize`, `finish`, `release` ni `track`** — esas son del consumidor
+  (scope `CLIENT`).
+- El contrato real (endpoints, scopes, identidad, flujo prepago) está
+  documentado en `docs/01-admin-financiera-integracion-cores.md` §3.
+
+---
+
 ## Pendientes de ADR (placeholder)
 
-- **ADR-010: Selección concreta de PAC** — diferida hasta sprint 4. Decisión
+- **ADR-012: Selección concreta de PAC** — diferida hasta sprint 4. Decisión
   entre Facturama, Solución Factible, Edicom. Variables a comparar: precio
   por timbre, SLA, soporte en español, calidad de la API.
-- **ADR-011: Backups y RPO/RTO del CAF** — `[TODO: completar]`. Necesita
+- **ADR-013: Backups y RPO/RTO del CAF** — `[TODO: completar]`. Necesita
   decisión sobre destino (S3 / Backblaze / OneDrive corporativo) y
   frecuencia.
-- **ADR-012: 2FA para super-admin** — mencionado en CLAUDE.md y SECURITY.md
+- **ADR-014: 2FA para super-admin** — mencionado en CLAUDE.md y SECURITY.md
   como requisito; tecnología concreta (TOTP / WebAuthn / push) `[TODO:
   completar]`.

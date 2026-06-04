@@ -1,0 +1,5 @@
+{
+  "tests/test_health.py": true,
+  "tests/test_hub_webhook.py": true,
+  "tests/test_jwt.py": true
+}

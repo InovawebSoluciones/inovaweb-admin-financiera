@@ -60,33 +60,82 @@ ya no por SQL.
 
 ### 3.1 Naturaleza
 
-CAF consume; Medidor IA es la fuente de verdad de saldo y consumo de cada
-cliente. CAF nunca duplica esos datos localmente; los pide cuando los necesita.
+El Medidor IA es una **wallet prepago autoritativa**: mantiene el saldo del
+cliente, lo valida antes de consumir, lo debita al consumir y registra todo en
+un ledger append-only. CAF nunca duplica saldo ni consumo localmente; los pide
+cuando los necesita.
 
-### 3.2 Endpoints invocados
+El modelo del piloto Scraping es **PREPAGO** (ver `docs/ADR.md` ADR-011):
 
-**En el alta del cliente:**
+1. **CAF (llave de scope `ADMIN`)** crea la wallet del cliente y la acredita
+   cuando se confirma una recarga vía Hub-Pasarelas.
+2. **El consumidor (la app Scraping, llave de scope `CLIENT`)** ejecuta el par
+   `authorize → finish` por cada operación cobrable. `authorize` crea un HOLD
+   y **valida el saldo**; si es insuficiente, rechaza y ahí es donde se impone
+   el bloqueo por saldo agotado. `finish` captura el hold y descuenta el saldo.
+
+El CAF no consume IA ni dispara `authorize/finish`; eso lo hace la app Nivel 3.
+El CAF solo crea/acredita la wallet y lee balance/consumo para tableros.
+
+### 3.2 Identidad de la wallet
+
+La wallet se identifica por la tupla **`(tenant_id, external_user_id)`**, que es
+UNIQUE en el Medidor. Para el piloto:
+
+| Campo | Valor |
+|---|---|
+| `tenant_id` | `inovaweb` |
+| proyecto | `scraping` |
+| `external_user_id` | `Company.id` de Scraping (= `company_id`) |
+
+El mapeo completo de identidad cross-core (`clients.id` del CAF ↔
+`Company.caf_client_id` ↔ `Company.id` ↔ `external_user_id` de la wallet) está
+documentado en `docs/ADR.md` ADR-011. El CAF guarda el `id` de wallet devuelto
+en `clients.medidor_account_id`.
+
+### 3.3 Autenticación y scopes
+
+Auth por API key en header `X-Api-Key` (o `Authorization: Bearer <key>`). El
+Medidor distingue dos scopes:
+
+| Scope | Operaciones | Quién la usa |
+|---|---|---|
+| `ADMIN` | crear wallet, `credit` (recarga), suspend/unsuspend, refund | **CAF** (`MEDIDOR_API_KEY`) |
+| `CLIENT` | `authorize`, `finish`, `release`, `quote`, `events/track` | **app consumidora** (Scraping) |
+
+El CAF solo posee la llave `ADMIN`. La llave `CLIENT` la usa la app Nivel 3 y
+se emite/entrega por separado (cableado a Scraping en TASK-21).
+
+### 3.4 Endpoints que invoca el CAF (scope ADMIN)
+
+**En el alta del cliente — crear wallet:**
 
 ```http
 POST https://medidor.inovaweb.com.mx/v1/wallets
-X-API-Key: <MEDIDOR_API_KEY>
+X-Api-Key: <MEDIDOR_API_KEY>
 Content-Type: application/json
 
 {
-  "external_user_id": "client-<uuid-caf>",
+  "tenant_id": "inovaweb",
+  "external_user_id": "<Company.id de Scraping>",
   "currency": "MXN",
   "metadata": {
     "caf_client_id": "<uuid-cliente-en-caf>",
+    "project": "scraping",
     "razon_social": "Norma Sánchez Consultoría"
   }
 }
 ```
 
-**En recarga confirmada (tras webhook del Hub):**
+Respuesta: `{ "id": "<wallet_id>", "balance_cents": 0, ... }`. La identidad
+`(tenant_id, external_user_id)` es UNIQUE: un segundo POST con la misma tupla
+devuelve conflicto (idempotente respecto a la creación).
+
+**En recarga confirmada (tras webhook del Hub) — acreditar saldo:**
 
 ```http
-POST https://medidor.inovaweb.com.mx/admin/v1/wallets/{wallet_id}/credit
-X-API-Key: <MEDIDOR_API_KEY>
+POST https://medidor.inovaweb.com.mx/v1/wallets/{wallet_id}/credit
+X-Api-Key: <MEDIDOR_API_KEY>
 Content-Type: application/json
 
 {
@@ -98,27 +147,79 @@ Content-Type: application/json
 }
 ```
 
-**En consulta de saldo para tableros:**
+`credit` es **idempotente por `request_id`**: `UNIQUE(wallet_id, request_id)`.
+Un webhook duplicado del Hub no produce doble acreditación.
+
+**En consulta de saldo para tableros / portal cliente:**
 
 ```http
 GET https://medidor.inovaweb.com.mx/v1/wallets/{wallet_id}/balance
-X-API-Key: <MEDIDOR_API_KEY>
+X-Api-Key: <MEDIDOR_API_KEY>
 ```
+
+Respuesta:
+
+```json
+{
+  "balance_cents": 38500,
+  "holds_total": 1200,
+  "disponible_cents": 37300
+}
+```
+
+`disponible_cents = balance_cents - holds_total` (saldo libre tras descontar
+los HOLDs activos de operaciones en vuelo).
 
 **En consulta de consumo del periodo:**
 
 ```http
-GET https://medidor.inovaweb.com.mx/v1/usage?from_ts=2026-05-01T00:00:00Z&to_ts=2026-06-01T00:00:00Z&project_id=<wallet_id>
-X-API-Key: <MEDIDOR_API_KEY>
+GET https://medidor.inovaweb.com.mx/v1/usage?from_ts=2026-05-01T00:00:00Z&to_ts=2026-06-01T00:00:00Z&wallet_id=<wallet_id>
+X-Api-Key: <MEDIDOR_API_KEY>
 ```
 
-### 3.3 Idempotencia
+**Admin — suspender / reactivar wallet (por mora o decisión operativa):**
 
-`request_id` del CAF al Medidor sigue patrón `caf-recharge-<RCH-id-local>`. Es
-UNIQUE en el Medidor, garantiza que un webhook duplicado del Hub no produzca
-doble acreditación.
+```http
+POST https://medidor.inovaweb.com.mx/v1/wallets/{wallet_id}/suspend
+POST https://medidor.inovaweb.com.mx/v1/wallets/{wallet_id}/unsuspend
+X-Api-Key: <MEDIDOR_API_KEY>
+```
 
-### 3.4 Política ante fallo
+Una wallet suspendida rechaza nuevos `authorize` aunque tenga saldo.
+
+### 3.5 Endpoints del consumidor (scope CLIENT) — referencia
+
+El CAF **no** llama estos; los documenta porque definen cómo se cobra el saldo
+que el CAF acredita. Los ejecuta la app Scraping (cableado en TASK-21):
+
+| Endpoint | Qué hace |
+|---|---|
+| `POST /v1/operations/quote` | Estima el costo de una operación sin reservar saldo. |
+| `POST /v1/operations/authorize` | Pre-check: crea un **HOLD** y **valida saldo**. Rechaza si es insuficiente (= bloqueo por saldo agotado). Devuelve `operation_id`. |
+| `POST /v1/operations/finish` | Captura el hold → **DEBIT**: descuenta el saldo. Idempotente por `request_id`. |
+| `POST /v1/operations/release` | Libera un hold sin cobrar (operación cancelada/fallida). |
+| `POST /v1/events/track` | Telemetría de uso. **NO cobra**, solo alimenta `/usage`. |
+| `POST /v1/events/refund` | Reembolso de un evento ya cobrado (genera entrada inversa en el ledger). |
+
+Flujo típico del consumidor: `authorize` (reserva + valida) → ejecuta el trabajo
+→ `finish` (cobra) o `release` (no cobra). Si `authorize` devuelve saldo
+insuficiente, la app no ejecuta el trabajo: ahí termina el draw-down.
+
+### 3.6 Modelo interno del Medidor (garantías que el CAF asume)
+
+- **Ledger append-only** `wallet_transactions`: cada credit/debit/hold/release
+  es una fila inmutable.
+- **Balance materializado** sobre el ledger, con **locking optimista** para
+  resolver concurrencia de operaciones simultáneas sobre la misma wallet.
+- **Idempotencia** por `UNIQUE(wallet_id, request_id)` en credit y finish.
+
+### 3.7 Idempotencia desde el CAF
+
+`request_id` del CAF al Medidor sigue patrón `caf-recharge-<RCH-id-local>`.
+Es UNIQUE por wallet en el Medidor: garantiza que un webhook duplicado del Hub
+no produzca doble acreditación.
+
+### 3.8 Política ante fallo
 
 Reintento automático del CAF con backoff exponencial 3 intentos. Si persiste,
 se encola en tabla `medidor_retry_queue` del CAF con reintento cada 60s hasta

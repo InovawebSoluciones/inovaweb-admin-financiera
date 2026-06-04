@@ -21,8 +21,8 @@ async def main() -> None:
     log = logging.getLogger("worker.overdue_notifier")
     async with SessionLocal() as db:
         rows = (await db.execute(text("""
-            SELECT i.id, i.total_cents, i.created_at, c.billing_email, c.legal_name,
-                   c.messages_account_id
+            SELECT i.id, i.total_cents, i.created_at, c.id AS client_id,
+                   c.billing_email, c.legal_name
             FROM invoices i JOIN clients c ON c.id = i.client_id
             WHERE i.status = 'stamped'
               AND i.paid_at IS NULL
@@ -46,10 +46,12 @@ async def main() -> None:
             for r in rows:
                 try:
                     await msg.send_email(
-                        to=r["billing_email"],
-                        subject=f"Factura {r['id']} vencida",
-                        html=_render_overdue(r),
-                        account_id=r["messages_account_id"],
+                        client_id=str(r["client_id"]),
+                        service_id="recordatorio-vencimiento",
+                        template_id="caf-recordatorio-vencimiento-tplus5",
+                        to={"email": r["billing_email"], "name": r["legal_name"]},
+                        variables=_overdue_variables(r),
+                        meta={"caf_invoice_id": str(r["id"])},
                     )
                     await db.execute(text("""
                         INSERT INTO audit_log
@@ -67,15 +69,19 @@ async def main() -> None:
         log.info("overdue_notify_done", extra={"sent": sent, "candidates": len(rows)})
 
 
-def _render_overdue(r) -> str:
-    total = r["total_cents"] / 100
-    return f"""
-    <p>Hola {r['legal_name']},</p>
-    <p>La factura #{r['id']} por <b>${total:,.2f} MXN</b> emitida el
-    {r['created_at']:%Y-%m-%d} se encuentra vencida.</p>
-    <p>Por favor liquidela cuanto antes para evitar la suspension del servicio.</p>
-    <p>Gracias.<br>Inovaweb</p>
+def _overdue_variables(r) -> dict:
+    """Variables tipadas para la plantilla 'caf-recordatorio-vencimiento-tplus5'.
+
+    El monto se formatea humano a partir de centavos enteros (sin floats en
+    almacenamiento; la division es solo presentacion).
     """
+    total_humano = f"${r['total_cents'] / 100:,.2f} MXN"
+    return {
+        "razon_social": r["legal_name"],
+        "factura_folio": str(r["id"]),
+        "monto_total_humano": total_humano,
+        "fecha_emision": f"{r['created_at']:%Y-%m-%d}",
+    }
 
 
 if __name__ == "__main__":
