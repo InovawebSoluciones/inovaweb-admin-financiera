@@ -204,7 +204,7 @@ async def edit_client(
 async def suspend_client(
     cid: int,
     request: Request,
-    user: CurrentUser = Depends(_WRITE),
+    user: CurrentUser = Depends(_ADMIN),
     db: AsyncSession = Depends(get_db),
     reason: str = Form(...),
 ):
@@ -234,7 +234,7 @@ async def suspend_client(
 async def reactivate_client(
     cid: int,
     request: Request,
-    user: CurrentUser = Depends(_WRITE),
+    user: CurrentUser = Depends(_ADMIN),
     db: AsyncSession = Depends(get_db),
 ):
     """Reactiva un cliente suspendido -> status='active', limpia suspended_*."""

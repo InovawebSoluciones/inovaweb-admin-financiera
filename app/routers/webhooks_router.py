@@ -36,17 +36,7 @@ def _verify_signed_timestamp(
     tolerance_sec: int,
     require_timestamp: bool = False,
 ) -> bool:
-    """Verifica firma sobre `<timestamp>.<body>` y la ventana de tiempo.
-
-    Mitiga replay: el Hub firma `f"{timestamp}.{body}"`; se rechaza si el
-    timestamp queda fuera de [now - tolerance, now + tolerance].
-
-    FIX-4 (TASK-15b): en prod (`require_timestamp=True`) se EXIGE el timestamp
-    firmado; si el webhook no lo trae -> False (401), nunca se cae al modo sin
-    ventana anti-replay. En dev/staging, si el Hub NO envia timestamp, se cae al
-    esquema simple `_verify_hmac` para no romper integraciones que no lo
-    soporten todavia.
-    """
+    """Verifica firma sobre `<timestamp>.<body>` y la ventana de tiempo."""
     if not timestamp:
         if require_timestamp:
             return False
@@ -140,8 +130,6 @@ async def hub_payment_paid(
             db, payload, actor_ip=actor_ip, request_id=request_id
         )
     except PrepagoError as e:
-        # fallo recuperable: NO perder el pago. Devolver 5xx para que el Hub
-        # reintente; el procesamiento es idempotente y ya se auditó el fallo.
         log.error("hub_payment_processing_error", extra={"error": str(e)})
         raise HTTPException(
             status.HTTP_502_BAD_GATEWAY, "error procesando pago (reintentar)"

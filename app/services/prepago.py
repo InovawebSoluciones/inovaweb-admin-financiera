@@ -84,8 +84,8 @@ async def initiate_charge(
     """Crea el intento de cobro en el Hub (gateway conekta).
 
     `client` es la fila de `clients` (dict). El external_user_id de la wallet es
-    `client['hub_account_id']`. `purpose` ∈ {plan_purchase, wallet_recharge}.
-    Persiste el intento en audit_log (recharge.initiated) — no en payments,
+    `client['hub_account_id']`. `purpose` in {plan_purchase, wallet_recharge}.
+    Persiste el intento en audit_log (recharge.initiated) -- no en payments,
     porque payments es append-only y solo registra pagos CONFIRMADOS.
     """
     if amount_cents <= 0:
@@ -248,10 +248,6 @@ async def _process_wallet_credit(
         raise PrepagoError("evento sin amount_cents valido")
 
     # ---- FIX-2: correlacionar con el intento local (recharge.initiated) ----
-    # initiate_charge dejo en audit_log el recharge_id + purpose + amount_cents.
-    # Si no hay intento previo, o purpose/amount no coinciden -> rechazar (no
-    # acreditar) y auditar hub.paid.rejected. Evita acreditar pagos no iniciados
-    # por el CAF o con monto/proposito manipulado.
     await _correlate_or_reject(
         db, ev, actor_ip=actor_ip, request_id=request_id
     )
@@ -277,14 +273,6 @@ async def _process_wallet_credit(
     reason = "plan_purchase" if ev["purpose"] == "plan_purchase" else "wallet_recharge"
 
     # ---- FIX-1: reclamar el pago a nivel BD (idempotencia atomica) ----
-    # INSERT ... ON CONFLICT (uq_payments_hub) DO NOTHING. Si NO inserta fila
-    # (replay / webhook concurrente que ya gano) -> duplicate_ignored, sin
-    # credit / asiento / correo. La fila se reclama ANTES de los I/O externos:
-    # si el credit o el asiento fallan, esta sesion hace rollback (el router
-    # propaga PrepagoError -> 502) y la fila reclamada DESAPARECE, de modo que
-    # el reintento del Hub vuelve a reclamar y completar. El request_id /
-    # source_ref deterministas garantizan que ese reintento no duplique saldo
-    # ni asiento aunque el credit ya hubiera ocurrido parcialmente.
     claimed = await db.execute(text("""
         INSERT INTO payments (client_id, invoice_id, amount_cents, currency,
                               method, hub_payment_id, received_at, notes)
@@ -312,11 +300,6 @@ async def _process_wallet_credit(
             },
         )
     except Exception as e:
-        # NO perder el pago: auditar el fallo en transaccion PROPIA y propagar
-        # como recuperable. La fila reclamada en payments hace rollback junto
-        # con esta sesion -> en el reintento del Hub se vuelve a reclamar y a
-        # procesar; el request_id determinista evita doble acreditacion en el
-        # Medidor aunque este credit hubiera dejado efecto parcial.
         await _persist_failure_audit(
             actor_ip=actor_ip, request_id=request_id,
             new_values={"error": str(e), "stage": "medidor_credit",
@@ -340,12 +323,6 @@ async def _process_wallet_credit(
             meta={"caf_client_id": client_id, "hub_transaction_id": hub_txn_id},
         )
     except Exception as e:
-        # el saldo YA se acredito en el Medidor (lo importante para el cliente).
-        # El asiento en Finanzas es recuperable por su propio source_ref
-        # idempotente. Auditar y propagar: la fila reclamada en payments hace
-        # rollback con esta sesion, asi que el reintento del Hub re-reclama y
-        # completa el asiento. request_id/source_ref deterministas evitan
-        # doble acreditacion en Medidor y doble asiento en Finanzas.
         await _persist_failure_audit(
             actor_ip=actor_ip, request_id=request_id,
             new_values={"error": str(e), "stage": "finanzas_post_entry",
@@ -489,9 +466,6 @@ async def _correlate_or_reject(
     if reject_reason is None:
         return
 
-    # auditar el rechazo en sesion propia (la sesion del request hara rollback
-    # al propagar el error) y lanzar -> el router responde 502 (reintentable);
-    # el rechazo es estable: el reintento volvera a rechazar.
     await _persist_failure_audit(
         actor_ip=actor_ip, request_id=request_id,
         action="hub.paid.rejected",

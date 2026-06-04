@@ -310,7 +310,7 @@ pospuesta hasta demanda real.
 
 ## 12. ESTADO ACTUAL Y PENDIENTES (actualizar al cerrar cada sesion)
 
-**Sesion al: 2026-06-04. Foco: piloto PREPAGO de Scraping Universidades.**
+**Sesion al: 2026-06-04. Foco: piloto PREPAGO + CRUD clientes + git SSH.**
 
 Modelo del piloto: cliente elige plan -> paga (Conekta sandbox) -> CAF acredita
 saldo en wallet del Medidor -> consumo IA descuenta -> al agotarse, bloqueo.
@@ -320,16 +320,17 @@ external_user_id (tenant 'inovaweb'). Detalle completo en memoria del proyecto.
 
 | # | Pendiente | Estado |
 |---|---|---|
-| 15 | Flujo prepago CAF (Hub->wallet) | codigo de #15b aplicado en prepago.py; **verificar en host real**: existe database/004 (indice uq_payments_hub) + correr pytest |
-| 8 | CRUD clientes + API /api/v2 | spec listo (.vpm/tasks/task-08), ejecutor NO lanzado |
 | 16 | Onboarding crea wallet + liga Scraping + activacion correo/WhatsApp | spec listo (.vpm/tasks/task-16), no ejecutado |
 | 18 | Key ADMIN del Medidor | script vps/04 creado; **usuario** lo corre en VPS y pega MEDIDOR_API_KEY en .env del CAF |
 | 19,22 | Hardening (idempotencia BD, retry de finish, filtro company_id explicito, fail-closed en prod, tope monto, rotar Bearer) | backlog antes de multi-cliente |
 | 1 | DNS/TLS admin+app | **usuario** en VPS |
-| 2 | Commit/push (git add -A) | **usuario** decide |
 
-Hechas: #5 (clientes contrato real), #6 (onboarding prepago), #7 (seed planes),
-#14 (identidad), #20 (docs Medidor + ADR), #21 (integracion Scraping<->Medidor).
+Hechas esta sesion: #15 (uq_payments_hub aplicado en BD, 18 tests verdes en VPS),
+#8 (CRUD clientes + API /api/v2, 10 tests authz verdes).
+Hechas antes: #5, #6, #7, #14, #20, #21.
+
+GIT: VPS usa SSH (llave ed25519 en GitHub). Windows usa HTTPS con credential cache.
+Dockerfile ahora incluye COPY tests ./tests.
 
 OJO ENTORNO: OneDrive deja archivos "solo nube"/truncados; el mount Linux no es
 fiable para leer/test. Hidratar y verificar en host real antes de commitear.

@@ -9,5 +9,15 @@
   "tests/test_password.py::test_hash_is_random_salt",
   "tests/test_promotions.py::test_fixed_discount",
   "tests/test_promotions.py::test_no_discount_when_both_null",
-  "tests/test_promotions.py::test_pct_discount"
+  "tests/test_promotions.py::test_pct_discount",
+  "tests/test_task08.py::test_api_run_closing_501",
+  "tests/test_task08.py::test_balance_404_unknown_client",
+  "tests/test_task08.py::test_balance_calls_medidor",
+  "tests/test_task08.py::test_balance_no_wallet",
+  "tests/test_task08.py::test_reactivate_403_for_lectura",
+  "tests/test_task08.py::test_reactivate_changes_status_and_audits",
+  "tests/test_task08.py::test_suspend_403_for_finanzas",
+  "tests/test_task08.py::test_suspend_403_for_lectura",
+  "tests/test_task08.py::test_suspend_409_when_not_active",
+  "tests/test_task08.py::test_suspend_changes_status_and_audits"
 ]
