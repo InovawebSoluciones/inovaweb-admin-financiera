@@ -17,6 +17,7 @@ RUN pip install --upgrade pip && pip install .
 COPY app ./app
 COPY database ./database
 COPY static ./static
+COPY tests ./tests
 
 EXPOSE 8001
 
