@@ -314,61 +314,59 @@ pospuesta hasta demanda real.
 
 ## 12. ESTADO ACTUAL Y PENDIENTES (actualizar al cerrar cada sesion)
 
-**Sesion al: 2026-06-07 (v2). Foco: CABLEAR CORES + FLUJO DE PAGO FUNCIONANDO E2E.**
+**Sesion al: 2026-06-07 (v3 — traslada formal). Foco: GRUPO 3 completo + pre-produccion.**
 
-Modelo: cliente paga -> Hub (pasarela) cobra -> webhook -> CAF acredita saldo en
-wallet del Medidor -> consumo IA/mensajes descuenta -> cuadre en Finanzas.
-Identidad: CAF clients.id <-> external_user_id "client-{id}" en cada core.
+Modelo confirmado: cliente paga -> Hub cobra -> webhook -> CAF acredita wallet Medidor
+-> consumo IA/mensajes descuenta -> billing cierra mensual -> factura con invoice_items.
+Identidad: CAF clients.id <-> external_user_id "client-{id}" en todos los cores.
 
-### ✅ FUNCIONA EN PROD (verificado E2E esta sesion)
-- **Flujo de pago completo, sin saltarse cores:** CAF /portal/recharge -> Hub
-  /hub/v1/charge (gateway mock async=pending) -> webhook paid -> Hub notifica al
-  CAF (D2, HMAC) -> CAF acredita Medidor + asienta Finanzas. Verificado:
-  **saldo Medidor $500**, **payments CAF $500 (hub_card)**, **Finanzas
-  source=hub credit 50000 (1 asiento)**. Idempotente.
-- **Onboarding real:** cliente Inovaweb **id=5**, wallet Medidor
-  `25116fe8-8b3e-4ca9-8415-a81c13fd061b`, link a company Scraping `inovaweb`
-  (`bb21b463-...`, caf_client_id=5).
-- **4 claves de cores ACUÑADAS y cableadas en .env del CAF** (estaban CHANGE_ME):
-  Medidor(admin/HMAC), Hub(payments:write), Centro(*), Finanzas(ledger:write).
-  Verificadas vs cada core vivo. VALORES: en .env del VPS / gestor de secretos
-  (NO en git). Admin CAF: usuario conrado.torres@inovaweb.com.mx (clave fuera de git).
-- **D2 corregido y desplegado:** Hub notifica al CAF (no acredita Medidor directo,
-  flag CAF_WEBHOOK_URL + secreto compartido HUB_WEBHOOK_SECRET); Centro ya NO
-  auto-reporta a Finanzas (REPORT_TO_FINANZAS=false). **El CAF es el unico contador.**
-- **Tarificacion (rating) viva:** `007_price_catalog.sql` (IA/token + mensajes por
-  canal + costo/margen, micro-pesos), `pricing.py`, `billing.py` factura a PRECIO
-  PUBLICO y asienta consumo (source=invoice debit) en Finanzas. Doc: `docs/MODELO-COBRO.md`.
-- **Migraciones aplicadas a BD viva CAF:** 003-007. Scraping: esquema corregido
-  por DDL directo (caf_client_id BIGINT + medidor_wallet_id) — alembic quedo en
-  0001 (cadena rota en imagen), deuda.
+### ✅ COMPLETADO EN SESION 2026-06-07 v2+v3
+
+**Heredado de sesion v2 (ya en prod, verificado E2E):**
+- Flujo de pago E2E: recharge -> Hub -> webhook HMAC -> CAF acredita Medidor + Finanzas.
+- Onboarding real: cliente id=5, wallet `25116fe8-...`, link Scraping caf_client_id=5.
+- 4 API keys cableadas en .env VPS. D2 corregido (Hub->CAF, no Hub->Medidor).
+- Tarificacion viva: pricing.py, billing.py, 007_price_catalog.sql.
+- Migraciones 001-007 aplicadas a BD viva CAF.
+
+**Nuevo en sesion v3 (codigo listo, deploy pendiente usuario):**
+- **Grupo 3-A:** scraping_client.py, 005_activation_tokens.sql, onboarding paso 2b
+  (link-caf con saga) + paso 5b (token SHA-256 + email activacion 3 variables).
+- **Grupo 3-B:** 006_idempotencia.sql, retry backoff medidor.credit, fail-closed prod
+  (HUB_WEBHOOK_SECRET != HUB_API_KEY), tope MAX_RECARGA_CENTS, H3 filtro client_id JWT.
+- **Grupo 3-C:** templates Jinja2+HTMX (admin/ + portal/), endpoints HTML completos.
+- **Grupo 3-D:** billing.py consumo IA + emails, get_usage_summary, messages get_usage
+  corregido a ruta real /v1/reports/usage.
+- **Fix D1:** caf_client_id BIGINT en Scraping (company.py + router + alembic 0005).
+- **Fix coherencia:** scraping_client envia caf_client_id como int (no str).
+- **.env.example** actualizado: SCRAPING_BASE_URL, SCRAPING_ADMIN_KEY,
+  HUB_WEBHOOK_SECRET, MAX_RECARGA_CENTS.
+- **Artefactos deploy:** commits-listos.md, deploy-vps.sh, seed-mensajes.md,
+  deploy-y-smoke-test-2026-06-07.md (FASE 0: endpoints Scraping consumo IA+email).
+- **traslada ejecutado:** engineering:code-review + inovaweb-documentacion corridos.
 
 ### Estado de repos
-- CAF: todo commiteado+pusheado a GitHub (varios commits, ultimo ~7746b37).
-- Centro: pusheado (6ebb0bc, D2). Scraping: pusheado (08882da, link-caf+usage+BIGINT).
-- **Hub: cambios D2 commiteados SOLO en repo del VPS (/opt/inovaweb-hub-pasarelas),
-  push a GitHub fallo por credenciales del remoto -> PENDIENTE pushear.**
+- CAF: codigo Grupo 3 listo localmente. **Commit+push PENDIENTE** (usar commits-listos.md).
+- Scraping: fix D1 + endpoint link-caf + endpoints usage listo. **Commit+push PENDIENTE**.
+- Hub: cambios D2 SOLO en VPS. **Push a GitHub PENDIENTE** (credenciales del remoto).
+- Centro/Finanzas/Medidor: sin cambios en esta sesion.
 
-### Pendientes (orden)
+### Pendientes (orden de ejecucion)
 | # | Pendiente | Estado |
 |---|---|---|
-| P1 | **Endpoint `POST /v1/messages/record` en Centro + nodo n8n** (registrar envio email/whatsapp/sms con destinatario+sent_at+client_id; tenant via key; idempotente por source_ref). Opcion B. | DISEÑADO, no implementado (diferido por usuario) |
-| P2 | **Smoke real del CONSUMO** (cuanto se cobro): IA real (Scraping authorize/finish) + mensajes -> CAF tarifica -> debito Finanzas -> saldo baja -> cuadre = pagado-cobrado | pendiente |
-| P3 | **Proveedor de email en Centro** (`tenant_channel_credentials` VACIO -> sin entrega real). Resend o SMTP M365. Necesario para correos reales y para Opcion A. | pendiente usuario (credencial) |
+| DEPLOY | Commit+push CAF+Scraping -> deploy VPS -> migraciones 005+006 -> seed plantilla | PENDIENTE USUARIO |
+| SMOKE | Smoke test real con datos Inovaweb (deploy-y-smoke-test-2026-06-07.md) | PENDIENTE USUARIO |
+| P3 | Proveedor email en Centro (Resend o SMTP M365) — sin esto no llegan correos reales | pendiente usuario |
 | P4 | Push del Hub a GitHub (hoy solo en VPS) | pendiente |
-| P5 | Limpieza: 1-2 tx 'paid' huerfanas en Hub (de depuracion), backups .bak-* en VPS | menor |
 | 1 | DNS/TLS admin/app.inovaweb.com.mx | pendiente usuario |
-| P6 | **Docs formales DESACTUALIZADOS** (README/ADR/RUNBOOK/DEPLOY/CHANGELOG/OWASP reflejan estado PRE-2026-06-07-v2). Regenerar con skill `inovaweb-documentacion` (Cowork) en el próximo cierre formal `traslada`. | pendiente |
-| F | CFDI 4.0 via Ecofile | diferido |
+| P1 | Endpoint POST /v1/messages/record en Centro + nodo n8n | diferido por usuario |
+| F | CFDI 4.0 via Ecofile (requiere contrato de API con Ecofile) | diferido |
 
-⚠️ **FUENTE DE VERDAD = esta §12 + memoria del proyecto.** El cierre de esta sesión
-fue LIGERO (no se corrió el `traslada` completo): NO se ejecutaron `engineering:code-review`
-ni `inovaweb-documentacion`. Por eso los **docs formales del repo están atrasados** — NO
-confiar en README/ADR/RUNBOOK/DEPLOY/CHANGELOG/OWASP hasta regenerarlos (P6). El código
-y el estado real SÍ están reflejados aquí.
+✅ **traslada completo ejecutado esta sesion** (engineering:code-review + inovaweb-documentacion).
+Los docs formales del repo reflejan el estado al 2026-06-07 v3.
 
 GIT: VPS usa SSH; Windows HTTPS con credential cache. pytest diferido a Docker/VPS.
-OJO: claves/credenciales reales NUNCA en CLAUDE.md (se commitea); viven en .env del VPS.
+OJO: claves/credenciales reales NUNCA en CLAUDE.md; viven en .env del VPS.
 
 ---
 
