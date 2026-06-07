@@ -182,5 +182,43 @@ class MessagesClient:
             break
         return {"messages": messages, "cost_cents": cost_cents}
 
+    async def get_usage_by_channel(
+        self, external_user_id: str, *, from_ts: str, to_ts: str
+    ) -> dict[str, int]:
+        """GET /v1/reports/usage?group_by=channel,client — conteo por canal.
+
+        El CAF tarifica los mensajes POR CANAL (email != whatsapp != sms ...), asi
+        que necesita el conteo desglosado, no el total. Devuelve un dict
+        `{canal: cantidad}` con SOLO las filas del cliente `external_user_id`.
+        Si el cliente no tiene mensajes en el periodo, devuelve `{}`.
+
+        Args:
+            external_user_id: identificador del cliente en el Centro de Mensajes
+                (en el CAF, `clients.messages_account_id`).
+            from_ts: inicio del periodo (ISO-8601).
+            to_ts: fin del periodo (ISO-8601).
+
+        Returns:
+            dict canal -> cantidad de mensajes enteros (int).
+        """
+        resp = await self.c.get(
+            "/v1/reports/usage",
+            params={
+                "group_by": "channel,client",
+                "from_ts": from_ts,
+                "to_ts": to_ts,
+            },
+        )
+        target = str(external_user_id)
+        out: dict[str, int] = {}
+        for row in (resp or {}).get("rows") or []:
+            if str(row.get("client_id")) != target:
+                continue
+            channel = row.get("channel")
+            if not channel:
+                continue
+            out[str(channel)] = out.get(str(channel), 0) + int(row.get("count") or 0)
+        return out
+
     async def close(self) -> None:
         await self.c.close()

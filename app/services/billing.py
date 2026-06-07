@@ -10,8 +10,10 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.clients.finanzas_client import FinanzasClient
 from app.core.clients.medidor_client import MedidorClient
 from app.core.clients.messages_client import MessagesClient
+from app.services.pricing import PricingError, price_quantity
 from app.services.promotions import apply_promotions
 
 # Claves SAT genericas para conceptos de servicio facturados por consumo.
@@ -22,6 +24,29 @@ _SAT_KEY_CONSUMO = "81112200"
 _UNIT_SAT_KEY_SERVICIO = "E48"
 
 log = logging.getLogger("billing")
+
+
+async def _price_or_none(
+    db: AsyncSession, *, meter: str, unit_code: str, quantity: int, client_id: int
+):
+    """Tarifica una cantidad al precio publico; degrada a None si no hay precio.
+
+    Envuelve `pricing.price_quantity`: si la cantidad es 0 o no hay precio activo
+    en `price_catalog` para esa unidad, loguea y devuelve None (el concepto se
+    OMITE de la factura, no se rompe el cierre).
+    """
+    if quantity <= 0:
+        return None
+    try:
+        return await price_quantity(
+            db, meter=meter, unit_code=unit_code, quantity=quantity
+        )
+    except PricingError as e:
+        log.warning("pricing_missing", extra={
+            "client_id": client_id, "meter": meter,
+            "unit_code": unit_code, "error": str(e),
+        })
+        return None
 
 
 @dataclass(slots=True)
@@ -205,7 +230,9 @@ async def _close_one_subscription(
             })
             subtotal += amount
 
-    # 2b) consumo IA agregado del Medidor (concepto unico por periodo)
+    # 2b) consumo IA: el Medidor mide la CANTIDAD (tokens); el CAF aplica el
+    #     PRECIO PUBLICO (price_catalog via pricing). El costo crudo del Medidor
+    #     NO se factura -- es solo para margen/COGS.
     if sub["medidor_account_id"]:
         try:
             ia = await medidor.get_usage_summary(
@@ -219,26 +246,27 @@ async def _close_one_subscription(
             })
             ia = {"operations": 0, "cost_cents": 0}
 
-        ia_ops = int(ia.get("operations", 0))
-        ia_cost = int(ia.get("cost_cents", 0))
-        # solo facturar si hubo costo real en el periodo; si no, OMITIR
-        if ia_cost > 0:
-            unit_price = ia_cost // ia_ops if ia_ops > 0 else ia_cost
+        ia_qty = int(ia.get("operations", 0))  # cantidad medida (tokens)
+        priced = await _price_or_none(db, meter="ia", unit_code="token",
+                                      quantity=ia_qty,
+                                      client_id=sub["client_id"])
+        if priced and priced.amount_cents > 0:
             items.append({
-                "description": f"Consumo IA — {ia_ops} operaciones",
-                "quantity": ia_ops if ia_ops > 0 else 1,
-                "unit_price_cents": unit_price,
-                "amount_cents": ia_cost,
+                "description": f"Consumo IA — {ia_qty} tokens",
+                "quantity": 1,  # linea de paquete: el detalle (tokens) va en la descripcion
+                "unit_price_cents": priced.amount_cents,
+                "amount_cents": priced.amount_cents,
                 "sat_key": _SAT_KEY_CONSUMO,
                 "unit_sat_key": _UNIT_SAT_KEY_SERVICIO,
                 "service_id": None,
             })
-            subtotal += ia_cost
+            subtotal += priced.amount_cents
 
-    # 2c) mensajes enviados via Centro de Mensajes (concepto unico por periodo)
+    # 2c) mensajes via Centro de Mensajes: se cuentan UNIDADES ENTERAS POR CANAL
+    #     (email != whatsapp != sms ...), cada canal con su precio publico.
     if sub["messages_account_id"]:
         try:
-            msg = await messages.get_usage(
+            by_channel = await messages.get_usage_by_channel(
                 sub["messages_account_id"],
                 from_ts=period_start.isoformat(),
                 to_ts=period_end.isoformat(),
@@ -247,23 +275,29 @@ async def _close_one_subscription(
             log.warning("messages_usage_fetch_failed", extra={
                 "client_id": sub["client_id"], "error": str(e),
             })
-            msg = {"messages": 0, "cost_cents": 0}
+            by_channel = {}
 
-        msg_count = int(msg.get("messages", 0))
-        msg_cost = int(msg.get("cost_cents", 0))
-        # si no hubo mensajes/costo en el periodo, OMITIR (no es error)
-        if msg_cost > 0:
-            unit_price = msg_cost // msg_count if msg_count > 0 else msg_cost
+        # un concepto por canal con consumo > 0, tarificado al precio del canal
+        for channel, count in sorted(by_channel.items()):
+            count = int(count)
+            if count <= 0:
+                continue
+            priced = await _price_or_none(db, meter="message", unit_code=channel,
+                                          quantity=count,
+                                          client_id=sub["client_id"])
+            if not priced or priced.amount_cents <= 0:
+                continue
+            unit_price = priced.amount_cents // count if count > 0 else priced.amount_cents
             items.append({
-                "description": f"Mensajes enviados — {msg_count} mensajes",
-                "quantity": msg_count if msg_count > 0 else 1,
+                "description": f"Mensajes {channel} — {count}",
+                "quantity": count,
                 "unit_price_cents": unit_price,
-                "amount_cents": msg_cost,
+                "amount_cents": priced.amount_cents,
                 "sat_key": _SAT_KEY_CONSUMO,
                 "unit_sat_key": _UNIT_SAT_KEY_SERVICIO,
                 "service_id": None,
             })
-            subtotal += msg_cost
+            subtotal += priced.amount_cents
 
     if not items:
         return None, 0  # plan free sin consumo
@@ -308,5 +342,30 @@ async def _close_one_subscription(
     await db.execute(text(
         "UPDATE invoices SET status='pending_stamp' WHERE id=:i"
     ), {"i": invoice_id})
+
+    # 6) asiento en Finanzas (libro de movimientos): el consumo facturado es un
+    #    CARGO (debit) del periodo. Best-effort + idempotente por invoice_id: si
+    #    Finanzas no responde, se loguea y el cierre NO se aborta (la factura ya
+    #    existe; el asiento se puede reintentar). Solo el CAF asienta (no los
+    #    cores) -> corrige el doble camino / auto-reporte (D2).
+    try:
+        fin = FinanzasClient()
+        try:
+            await fin.post_entry(
+                source_slug="invoice",
+                source_ref=f"caf-invoice-{invoice_id}",
+                direction="debit",
+                amount_cents=total,
+                occurred_at=period_end.isoformat(),
+                description=(
+                    f"Consumo facturado {period_start}..{period_end}"
+                ),
+                meta={"caf_client_id": sub["client_id"], "invoice_id": invoice_id},
+            )
+        finally:
+            await fin.close()
+    except Exception as e:
+        log.warning("finanzas_post_failed",
+                    extra={"invoice_id": invoice_id, "error": str(e)})
 
     return invoice_id, total
