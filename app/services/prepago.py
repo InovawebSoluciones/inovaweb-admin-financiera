@@ -359,7 +359,7 @@ async def _process_wallet_credit(
         INSERT INTO payments (client_id, invoice_id, amount_cents, currency,
                               method, hub_payment_id, received_at, notes)
         VALUES (:c, NULL, :a, 'MXN', 'hub_card', :h, now(), :n)
-        ON CONFLICT (hub_payment_id) DO NOTHING
+        ON CONFLICT (hub_payment_id) WHERE hub_payment_id IS NOT NULL DO NOTHING
     """), {"c": client_id, "a": amount_cents, "h": hub_txn_id,
            "n": f"prepago {ev['purpose']} recharge_id={recharge_id}"})
     if claimed.rowcount == 0:
