@@ -358,7 +358,14 @@ Identidad: CAF clients.id <-> external_user_id "client-{id}" en cada core.
 | P4 | Push del Hub a GitHub (hoy solo en VPS) | pendiente |
 | P5 | Limpieza: 1-2 tx 'paid' huerfanas en Hub (de depuracion), backups .bak-* en VPS | menor |
 | 1 | DNS/TLS admin/app.inovaweb.com.mx | pendiente usuario |
+| P6 | **Docs formales DESACTUALIZADOS** (README/ADR/RUNBOOK/DEPLOY/CHANGELOG/OWASP reflejan estado PRE-2026-06-07-v2). Regenerar con skill `inovaweb-documentacion` (Cowork) en el próximo cierre formal `traslada`. | pendiente |
 | F | CFDI 4.0 via Ecofile | diferido |
+
+⚠️ **FUENTE DE VERDAD = esta §12 + memoria del proyecto.** El cierre de esta sesión
+fue LIGERO (no se corrió el `traslada` completo): NO se ejecutaron `engineering:code-review`
+ni `inovaweb-documentacion`. Por eso los **docs formales del repo están atrasados** — NO
+confiar en README/ADR/RUNBOOK/DEPLOY/CHANGELOG/OWASP hasta regenerarlos (P6). El código
+y el estado real SÍ están reflejados aquí.
 
 GIT: VPS usa SSH; Windows HTTPS con credential cache. pytest diferido a Docker/VPS.
 OJO: claves/credenciales reales NUNCA en CLAUDE.md (se commitea); viven en .env del VPS.
