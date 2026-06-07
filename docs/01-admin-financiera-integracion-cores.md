@@ -180,10 +180,16 @@ X-Api-Key: <MEDIDOR_API_KEY>
 **Admin — suspender / reactivar wallet (por mora o decisión operativa):**
 
 ```http
-POST https://medidor.inovaweb.com.mx/v1/wallets/{wallet_id}/suspend
-POST https://medidor.inovaweb.com.mx/v1/wallets/{wallet_id}/unsuspend
+POST https://medidor.inovaweb.com.mx/admin/v1/wallets/{wallet_id}/suspend
+POST https://medidor.inovaweb.com.mx/admin/v1/wallets/{wallet_id}/unsuspend
 X-Api-Key: <MEDIDOR_API_KEY>
 ```
+
+> **Prefijo `/admin/v1` (verificado 2026-06-06 contra el fuente del Medidor,
+> `medidor_ia/src/medidor_ia/admin/router.py:39,125`):** suspend/unsuspend viven
+> bajo el router admin (`prefix="/admin/v1"`), NO bajo `/v1`. Contrasta con
+> `credit`, que —aunque exige scope ADMIN— sí vive en `/v1/wallets/{id}/credit`.
+> Ver ARQUITECTURA-GLOBAL §7-C1.
 
 Una wallet suspendida rechaza nuevos `authorize` aunque tenga saldo.
 

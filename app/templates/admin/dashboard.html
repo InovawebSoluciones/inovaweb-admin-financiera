@@ -3,20 +3,65 @@
 {% block content %}
 <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
   <div class="bg-white p-5 rounded shadow-sm">
-    <div class="text-xs text-slate-500">Clientes activos</div>
-    <div class="text-3xl font-bold">{{ m.clients_active }}</div>
-  </div>
-  <div class="bg-white p-5 rounded shadow-sm">
-    <div class="text-xs text-slate-500">Suspendidos</div>
-    <div class="text-3xl font-bold">{{ m.clients_suspended }}</div>
-  </div>
-  <div class="bg-white p-5 rounded shadow-sm">
     <div class="text-xs text-slate-500">Ingreso del mes</div>
     <div class="text-3xl font-bold">${{ '%.2f'|format(m.mtd_income_cents / 100) }}</div>
   </div>
   <div class="bg-white p-5 rounded shadow-sm">
-    <div class="text-xs text-slate-500">Facturas pendientes timbre</div>
-    <div class="text-3xl font-bold">{{ m.pending_stamp }}</div>
+    <div class="text-xs text-slate-500">Clientes activos</div>
+    <div class="text-3xl font-bold">{{ m.clients_active }}</div>
+  </div>
+  <div class="bg-white p-5 rounded shadow-sm">
+    <div class="text-xs text-slate-500">Facturas del mes</div>
+    <div class="text-3xl font-bold">{{ m.invoices_mtd }}</div>
+  </div>
+  <div class="bg-white p-5 rounded shadow-sm">
+    <div class="text-xs text-slate-500">Mora (suspendidos)</div>
+    <div class="text-3xl font-bold">{{ m.clients_suspended }}</div>
+    <div class="text-xs text-slate-400 mt-1">{{ m.pending_stamp }} facturas pend. timbre</div>
+  </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-6">
+  {# actividad reciente: ultimas 10 del audit_log #}
+  <div class="bg-white p-5 rounded shadow-sm lg:col-span-2">
+    <h2 class="text-sm font-semibold text-slate-700 mb-3">Actividad reciente</h2>
+    <table class="w-full text-xs">
+      <thead class="text-slate-500 uppercase">
+        <tr><th class="text-left py-1">Fecha</th><th class="text-left py-1">Actor</th>
+          <th class="text-left py-1">Entidad</th><th class="text-left py-1">Accion</th></tr>
+      </thead>
+      <tbody>
+        {% for r in recent %}
+        <tr class="border-t">
+          <td class="py-1.5">{{ r.occurred_at.strftime('%Y-%m-%d %H:%M') }}</td>
+          <td class="py-1.5">{{ r.actor_email or 'system' }}</td>
+          <td class="py-1.5">{{ r.entity_type }}{% if r.entity_id %} #{{ r.entity_id }}{% endif %}</td>
+          <td class="py-1.5">{{ r.action }}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="py-4 text-center text-slate-500">Sin actividad.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <a href="/admin/audit-log" class="text-blue-600 text-xs mt-2 inline-block">Ver audit log completo</a>
+  </div>
+
+  {# barras de consumo por core (placeholder) #}
+  <div class="bg-white p-5 rounded shadow-sm">
+    <h2 class="text-sm font-semibold text-slate-700 mb-3">Consumo por core</h2>
+    <div class="space-y-3">
+      {% for cu in core_usage %}
+      <div>
+        <div class="flex justify-between text-xs text-slate-600">
+          <span>{{ cu.core }}</span><span>{{ cu.pct }}%</span>
+        </div>
+        <div class="w-full bg-slate-100 rounded h-2 mt-1">
+          <div class="bg-slate-700 h-2 rounded" style="width: {{ cu.pct }}%"></div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    <p class="text-xs text-slate-400 mt-3">Datos placeholder; agregado real desde el Medidor.</p>
   </div>
 </div>
 {% endblock %}

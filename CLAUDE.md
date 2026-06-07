@@ -314,42 +314,45 @@ pospuesta hasta demanda real.
 
 ## 12. ESTADO ACTUAL Y PENDIENTES (actualizar al cerrar cada sesion)
 
-**Sesion al: 2026-06-06. Foco: AUDITORIA GLOBAL + documentacion (sin tocar codigo).**
-
-> 🔴 **BLOQUEANTE C1 (auditoria 2026-06-06):** `app/core/clients/medidor_client.py:78,96`
-> acredita/borra wallet en `/admin/v1/wallets/{id}/...`, pero el Medidor expone
-> `credit` en `/v1/wallets/{id}/credit` y NO tiene rutas `/admin/v1` de wallet.
-> Toda recarga/onboarding daria 404. Fix de 1 linea por confirmar; NO commitear el
-> CAF hasta corregir y re-verificar QA del flujo prepago. Ver `docs/OWASP.md §0` y
-> `docs/ARQUITECTURA-GLOBAL.md §7`. Generados en esta sesion: ARQUITECTURA-GLOBAL,
-> OWASP, GUIA-DESARROLLADOR, GUIA-USUARIO-OPERADOR/CLIENTE, RESUMEN-EJECUTIVO.
-> Pendientes/detalle: `auditoria-global-2026-06-06/REPORTE-CAF.md`; resumen de toda
-> la plataforma + commits: `auditoria-global-2026-06-06/00-RESUMEN-GLOBAL.md`.
-
-**Sesion previa al: 2026-06-04. Foco: piloto PREPAGO + CRUD clientes + git SSH.**
+**Sesion al: 2026-06-07. Foco: GRUPO 3 completo + pre-produccion.**
 
 Modelo del piloto: cliente elige plan -> paga (Conekta sandbox) -> CAF acredita
 saldo en wallet del Medidor -> consumo IA descuenta -> al agotarse, bloqueo.
 El Medidor core YA implementa prepago (authorize/finish/credit/balance). Identidad:
 CAF clients.id <-> Scraping Company.caf_client_id <-> Company.id <-> wallet
-external_user_id (tenant 'inovaweb'). Detalle completo en memoria del proyecto.
+external_user_id (tenant 'inovaweb').
+
+### Completado esta sesion (Grupo 3)
+
+| Tarea | Estado | Archivos clave |
+|---|---|---|
+| C1 Fix medidor_client rutas | ✅ pytest 3/3 VPS | medidor_client.py |
+| A — Onboarding wallet + Scraping + activación | ✅ py_compile OK | onboarding.py, scraping_client.py, 005_activation_tokens.sql |
+| B — Hardening H1-H5 | ✅ py_compile OK | onboarding.py, config.py, prepago.py, 006_idempotencia.sql |
+| C — Frontend Jinja2 + HTMX | ✅ py_compile OK | templates/, admin_router.py, portal_router.py |
+| D — Billing consumo IA + emails | ✅ py_compile OK | billing.py, messages_client.py |
+| Pre-prod prep | ✅ | commits-listos.md, deploy-vps.sh, seed-mensajes.md |
+
+### Pendientes para el usuario (VPS)
 
 | # | Pendiente | Estado |
 |---|---|---|
-| 16 | Onboarding crea wallet + liga Scraping + activacion correo/WhatsApp | spec listo (.vpm/tasks/task-16), no ejecutado |
-| 18 | Key ADMIN del Medidor | script vps/04 creado; **usuario** lo corre en VPS y pega MEDIDOR_API_KEY en .env del CAF |
-| 19,22 | Hardening (idempotencia BD, retry de finish, filtro company_id explicito, fail-closed en prod, tope monto, rotar Bearer) | backlog antes de multi-cliente |
-| 1 | DNS/TLS admin+app | **usuario** en VPS |
+| 18 | Key ADMIN del Medidor → MEDIDOR_API_KEY en .env VPS | pendiente usuario |
+| 1 | DNS/TLS admin.inovaweb.com.mx + app.inovaweb.com.mx | pendiente usuario |
+| DEPLOY | git commit+push ambos repos → deploy VPS → migraciones 005+006 | pendiente usuario |
+| SEED | Sembrar plantilla caf-activacion-correo en Centro de Mensajes | pendiente usuario |
+| QA | pytest en Docker/VPS (solo py_compile local verificado) | pendiente usuario |
 
-Hechas esta sesion: #15 (uq_payments_hub aplicado en BD, 18 tests verdes en VPS),
-#8 (CRUD clientes + API /api/v2, 10 tests authz verdes).
-Hechas antes: #5, #6, #7, #14, #20, #21.
+### Pendientes técnicos menores
+
+| # | Detalle |
+|---|---|
+| D3 | Confirmar que Centro de Mensajes registra mensajes con el mismo external_user_id |
+| D4 | Verificar ruta real de Scraping en VPS (/root/ vs /opt/) y slug tenant |
+| F | Facturación CFDI 4.0 vía Ecofile — tarea final, requiere contrato de API |
 
 GIT: VPS usa SSH (llave ed25519 en GitHub). Windows usa HTTPS con credential cache.
-Dockerfile ahora incluye COPY tests ./tests.
-
-OJO ENTORNO: OneDrive deja archivos "solo nube"/truncados; el mount Linux no es
-fiable para leer/test. Hidratar y verificar en host real antes de commitear.
+pytest diferido a Docker/VPS (venv Linux no usable en Windows / OneDrive).
 
 ---
 

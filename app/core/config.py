@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     FINANZAS_BASE_URL: str = "https://finanzas.inovaweb.com.mx"
     FINANZAS_API_KEY: SecretStr = Field(...)
 
+    # --- apps Nivel 3 (orquestacion desde el CAF) ---
+    # Scraping Universidades: el CAF liga wallet + cliente en el alta (#16).
+    SCRAPING_BASE_URL: str = "https://scraping.inovaweb.com.mx"
+    SCRAPING_ADMIN_KEY: SecretStr = Field(...)
+
     # --- PAC (CFDI 4.0) ---
     PAC_PROVIDER: Literal["facturama", "factible", "edicom"] = "facturama"
     PAC_BASE_URL: str = "https://api.facturama.mx"
@@ -79,20 +84,43 @@ class Settings(BaseSettings):
     # Plantilla y service del Centro de Mensajes para confirmar pago/recarga.
     CAF_PAGO_CONFIRMADO_TEMPLATE: str = "caf-pago-confirmado"
     CAF_MESSAGES_SERVICE_ID: str = "caf-notificaciones"
+    # TASK-16: plantilla del Centro de Mensajes para el correo de activacion
+    # del titular (token de un solo uso). La activacion expira en 24h.
+    CAF_ACTIVACION_TEMPLATE: str = "caf-activacion-correo"
 
     @model_validator(mode="after")
     def _require_webhook_secret_in_prod(self) -> "Settings":
-        """FIX-3: en prod, HUB_WEBHOOK_SECRET es obligatorio (fail fast).
+        """FIX-3 + H4 (hardening #19/22): fail-closed del webhook en prod.
 
-        No se permite el fallback a HUB_API_KEY en produccion: la firma del
-        webhook debe verificarse con un secreto dedicado.
+        En produccion HUB_WEBHOOK_SECRET es OBLIGATORIO y debe ser un secreto
+        DEDICADO: no puede faltar ni ser igual a HUB_API_KEY. Reusar la llave
+        de API como secreto del webhook degradaria la separacion de secretos
+        (quien tenga la API key podria forjar webhooks). Cualquiera de las dos
+        condiciones aborta el arranque (ValueError -> fail fast).
         """
-        if self.ENV == "prod" and self.HUB_WEBHOOK_SECRET is None:
-            raise ValueError(
-                "HUB_WEBHOOK_SECRET es obligatorio en prod "
-                "(no se permite fallback a HUB_API_KEY)"
-            )
+        if self.ENV == "prod":
+            if self.HUB_WEBHOOK_SECRET is None:
+                raise ValueError(
+                    "HUB_WEBHOOK_SECRET es obligatorio en prod "
+                    "(no se permite fallback a HUB_API_KEY)"
+                )
+            if (self.HUB_WEBHOOK_SECRET.get_secret_value()
+                    == self.HUB_API_KEY.get_secret_value()):
+                raise ValueError(
+                    "HUB_WEBHOOK_SECRET no puede ser igual a HUB_API_KEY en prod "
+                    "(debe ser un secreto dedicado para la firma del webhook)"
+                )
         return self
+
+    @property
+    def MAX_RECHARGE_AMOUNT_CENTS(self) -> int:
+        """H5 (hardening #19/22): alias del tope de recarga (centavos BIGINT).
+
+        El setting canonico es MAX_RECARGA_CENTS (ya cableado en el router y el
+        servicio). Se expone este alias con el nombre del spec para no duplicar
+        la fuente de verdad del tope (ambos devuelven el mismo valor).
+        """
+        return self.MAX_RECARGA_CENTS
 
     def hub_webhook_secret(self) -> str:
         """Secreto efectivo para verificar la firma del webhook del Hub.

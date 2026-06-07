@@ -6,7 +6,7 @@ UI HTML server-side (Jinja2 + HTMX). Acceso restringido a roles internos.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,6 +36,12 @@ async def dashboard(
     user: CurrentUser = Depends(_OPS),
     db: AsyncSession = Depends(get_db),
 ) -> HTMLResponse:
+    """Tablero directivo: tarjetas de metricas + actividad reciente + consumo por core.
+
+    Entrega 4 metricas (ingreso del mes, clientes activos, facturas emitidas en el
+    mes, mora/suspendidos), las ultimas 10 entradas del audit_log y barras de
+    consumo por core (datos placeholder hasta cablear el agregado real del Medidor).
+    """
     metrics = (await db.execute(text("""
         SELECT
           (SELECT count(*) FROM clients WHERE status='active') AS clients_active,
@@ -43,11 +49,31 @@ async def dashboard(
           (SELECT COALESCE(sum(total_cents),0) FROM invoices
              WHERE status IN ('stamped','paid')
                AND date_trunc('month', created_at) = date_trunc('month', now())) AS mtd_income_cents,
+          (SELECT count(*) FROM invoices
+             WHERE date_trunc('month', created_at) = date_trunc('month', now())) AS invoices_mtd,
           (SELECT count(*) FROM invoices WHERE status='pending_stamp') AS pending_stamp
     """))).mappings().one()
+
+    # actividad reciente: ultimas 10 escrituras auditadas
+    recent = (await db.execute(text("""
+        SELECT a.occurred_at, u.email AS actor_email, a.entity_type,
+               a.entity_id, a.action
+        FROM audit_log a LEFT JOIN users u ON u.id = a.actor_user_id
+        ORDER BY a.occurred_at DESC LIMIT 10
+    """))).mappings().all()
+
+    # barras de consumo por core (placeholder; el agregado real vive en el Medidor)
+    core_usage = [
+        {"core": "Medidor", "pct": 0},
+        {"core": "Hub", "pct": 0},
+        {"core": "Finanzas", "pct": 0},
+        {"core": "Mensajes", "pct": 0},
+    ]
+
     return templates.TemplateResponse(
         request, "admin/dashboard.html",
-        {"user": user, "m": dict(metrics)},
+        {"user": user, "m": dict(metrics),
+         "recent": list(recent), "core_usage": core_usage},
     )
 
 
@@ -72,9 +98,14 @@ async def list_clients(
         ORDER BY created_at DESC LIMIT 200
     """
     rows = (await db.execute(text(sql), {"q": q, "st": page_status})).mappings().all()
+    ctx = {"user": user, "clients": list(rows), "q": q, "page_status": page_status}
+    # HTMX: devolver solo el fragmento de la tabla (los filtros usan hx-get).
+    if request.headers.get("HX-Request"):
+        return templates.TemplateResponse(
+            request, "admin/_clients_table.html", ctx,
+        )
     return templates.TemplateResponse(
-        request, "admin/clients_list.html",
-        {"user": user, "clients": list(rows), "q": q, "page_status": page_status},
+        request, "admin/clients_list.html", ctx,
     )
 
 
@@ -368,6 +399,39 @@ async def list_invoices(
     """))).mappings().all()
     return templates.TemplateResponse(
         request, "admin/invoices.html", {"user": user, "rows": list(rows)},
+    )
+
+
+@router.get("/billing/invoices/{iid}.{ext}")
+async def admin_download_invoice(
+    iid: int, ext: str,
+    user: CurrentUser = Depends(_OPS),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """Descarga el PDF/XML de una factura (operador interno).
+
+    A diferencia del portal, el operador puede descargar la factura de cualquier
+    cliente (sin filtro por client_id), pero solo si ya esta timbrada (estado
+    'stamped' o 'paid'). El acceso esta limitado a roles internos via `_OPS`.
+    """
+    if ext not in {"pdf", "xml"}:
+        raise HTTPException(404, "formato no soportado")
+    row = (await db.execute(text("""
+        SELECT pdf_path, xml_path, status FROM invoices WHERE id = :id
+    """), {"id": iid})).mappings().first()
+    if not row:
+        raise HTTPException(404, "factura no existe")
+    if row["status"] not in {"stamped", "paid"}:
+        raise HTTPException(409, "factura aun no timbrada")
+    path = row["pdf_path"] if ext == "pdf" else row["xml_path"]
+    if not path:
+        raise HTTPException(404, "archivo no disponible")
+    with open(path, "rb") as fh:
+        data = fh.read()
+    media = "application/pdf" if ext == "pdf" else "application/xml"
+    return Response(
+        data, media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="factura_{iid}.{ext}"'},
     )
 
 

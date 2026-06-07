@@ -30,9 +30,11 @@ Convenciones firmes:
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeVar
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -49,6 +51,61 @@ log = logging.getLogger("prepago")
 
 # purposes que en el modelo prepago acreditan saldo en la wallet del Medidor
 _WALLET_PURPOSES = frozenset({"plan_purchase", "wallet_recharge"})
+
+# H2 (hardening #19/22): reintentos con backoff exponencial del paso de credito
+# (descuento/acreditacion de saldo en el Medidor), que puede fallar por red.
+# tenacity NO es dependencia del proyecto (ver pyproject.toml) -> loop propio
+# con asyncio.sleep, sin agregar dependencias nuevas.
+_CREDIT_MAX_ATTEMPTS = 3
+_CREDIT_BACKOFF_SEC = (1.0, 2.0, 4.0)  # delay TRAS el intento i (1s, 2s, 4s)
+
+_T = TypeVar("_T")
+
+
+async def _retry_async(
+    op: Callable[[], Awaitable[_T]],
+    *,
+    max_attempts: int = _CREDIT_MAX_ATTEMPTS,
+    backoff_sec: tuple[float, ...] = _CREDIT_BACKOFF_SEC,
+    op_name: str = "op",
+) -> _T:
+    """Ejecuta `op` con reintentos y backoff exponencial (H2).
+
+    Reintenta hasta `max_attempts` veces ante cualquier excepcion. Entre el
+    intento i y el i+1 espera `backoff_sec[i]` segundos (1s/2s/4s por defecto).
+    Si se agotan los intentos, re-lanza la ultima excepcion para que el llamador
+    la audite/marque como recuperable (`pending_retry`).
+
+    Args:
+        op: corutina sin argumentos que realiza la operacion de red.
+        max_attempts: numero maximo de intentos (incluido el primero).
+        backoff_sec: delays entre intentos; el ultimo se reusa si faltan.
+        op_name: nombre para el log estructurado.
+
+    Returns:
+        El resultado de `op()` en el primer intento exitoso.
+
+    Raises:
+        Exception: la ultima excepcion si se agotan todos los intentos.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await op()
+        except Exception as e:  # noqa: BLE001 - se re-lanza tras agotar intentos
+            last_exc = e
+            if attempt >= max_attempts:
+                break
+            delay = backoff_sec[min(attempt - 1, len(backoff_sec) - 1)]
+            log.warning(
+                "retry_backoff",
+                extra={"op": op_name, "attempt": attempt,
+                       "max_attempts": max_attempts, "delay_sec": delay,
+                       "error": str(e)},
+            )
+            await asyncio.sleep(delay)
+    assert last_exc is not None  # invariante: el loop solo sale por exito o aqui
+    raise last_exc
 
 
 class PrepagoError(Exception):
@@ -247,6 +304,27 @@ async def _process_wallet_credit(
     if amount_cents is None or amount_cents <= 0:
         raise PrepagoError("evento sin amount_cents valido")
 
+    # ---- H5: tope de monto (defensa en profundidad) ----
+    # El portal ya valida el techo al iniciar la recarga, pero el webhook es un
+    # punto de entrada independiente: un monto manipulado por encima del tope se
+    # rechaza aqui ANTES de acreditar (no confiar solo en el cap del router).
+    max_recarga = get_settings().MAX_RECARGA_CENTS
+    if amount_cents > max_recarga:
+        await _persist_failure_audit(
+            actor_ip=actor_ip, request_id=request_id,
+            action="hub.paid.rejected",
+            new_values={"reason": "monto supera el tope de recarga",
+                        "hub_transaction_id": hub_txn_id,
+                        "amount_cents": amount_cents,
+                        "max_recarga_cents": max_recarga},
+        )
+        log.warning("hub_payment_over_cap",
+                    extra={"hub_transaction_id": hub_txn_id,
+                           "amount_cents": amount_cents, "cap": max_recarga})
+        raise PrepagoError(
+            f"monto {amount_cents} supera el tope de recarga {max_recarga}"
+        )
+
     # ---- FIX-2: correlacionar con el intento local (recharge.initiated) ----
     await _correlate_or_reject(
         db, ev, actor_ip=actor_ip, request_id=request_id
@@ -285,26 +363,43 @@ async def _process_wallet_credit(
                  extra={"hub_transaction_id": hub_txn_id})
         return PaidResult(status="duplicate_ignored", recharge_id=recharge_id)
 
-    # 1) acreditar saldo en el Medidor (idempotente por request_id determinista)
+    # 1) acreditar saldo en el Medidor (idempotente por request_id determinista).
+    #    H2: el credito puede fallar por red -> reintentos con backoff exponencial
+    #    (3 intentos, 1s/2s/4s). El request_id determinista hace que un reintento
+    #    NO produzca doble acreditacion (idempotencia del Medidor). Si se agotan
+    #    los reintentos, se marca la operacion como pending_retry (audit
+    #    hub.paid.pending_retry) y se deja recuperable (502 -> el Hub/worker la
+    #    re-procesa; el INSERT del pago ya reclamo la fila, no se duplica).
     medidor = MedidorClient()
     try:
-        await medidor.credit(
-            wallet_id,
-            amount_cents=amount_cents,
-            request_id=req_id,
-            reason=reason,
-            metadata={
-                "caf_client_id": client_id,
-                "hub_transaction_id": hub_txn_id,
-                "plan_code": ev.get("plan_code"),
-            },
+        await _retry_async(
+            lambda: medidor.credit(
+                wallet_id,
+                amount_cents=amount_cents,
+                request_id=req_id,
+                reason=reason,
+                metadata={
+                    "caf_client_id": client_id,
+                    "hub_transaction_id": hub_txn_id,
+                    "plan_code": ev.get("plan_code"),
+                },
+            ),
+            op_name="medidor_credit",
         )
     except Exception as e:
         await _persist_failure_audit(
             actor_ip=actor_ip, request_id=request_id,
+            action="hub.paid.pending_retry",
             new_values={"error": str(e), "stage": "medidor_credit",
-                        "hub_transaction_id": hub_txn_id,
+                        "status": "pending_retry",
+                        "attempts": _CREDIT_MAX_ATTEMPTS,
+                        "hub_transaction_id": hub_txn_id, "request_id": req_id,
                         "caf_client_id": client_id, "amount_cents": amount_cents},
+        )
+        log.error(
+            "medidor_credit_pending_retry",
+            extra={"hub_transaction_id": hub_txn_id, "caf_client_id": client_id,
+                   "request_id": req_id, "amount_cents": amount_cents},
         )
         raise PrepagoError(f"falla acreditando saldo en el medidor: {e}") from e
     finally:

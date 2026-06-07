@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>CAF — Panel de Estado · Inovaweb</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.6.1/mermaid.min.js"></script>
+<style>
+:root {
+  --bg:#0f1117; --card:#1a1d27; --border:#2d3148;
+  --accent:#6366f1; --accent2:#22d3ee;
+  --green:#10b981; --yellow:#f59e0b; --red:#ef4444; --gray:#6b7280;
+  --text:#e2e8f0; --dim:#94a3b8;
+  --font:'Segoe UI',system-ui,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:var(--font);min-height:100vh;}
+
+header{background:linear-gradient(135deg,#1a1d27,#16213e);border-bottom:1px solid var(--border);padding:18px 32px;display:flex;align-items:center;gap:14px;}
+header .logo{width:38px;height:38px;background:var(--accent);border-radius:10px;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:17px;color:#fff;}
+header h1{font-size:19px;font-weight:700;}
+header .sub{font-size:12px;color:var(--dim);margin-top:2px;}
+header .badge{margin-left:auto;background:rgba(16,185,129,.15);color:var(--green);border:1px solid rgba(16,185,129,.3);padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600;}
+
+.tabs{display:flex;gap:2px;padding:14px 32px 0;border-bottom:1px solid var(--border);background:var(--card);}
+.tab{padding:9px 18px;border-radius:8px 8px 0 0;cursor:pointer;font-size:13px;font-weight:600;color:var(--dim);border:1px solid transparent;border-bottom:none;transition:all .2s;}
+.tab:hover{color:var(--text);background:rgba(99,102,241,.1);}
+.tab.active{color:var(--accent);background:var(--bg);border-color:var(--border);border-bottom-color:var(--bg);}
+
+.panel{display:none;padding:28px 32px;}
+.panel.active{display:block;}
+
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:20px;}
+.card-title{font-size:13px;font-weight:700;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;margin-bottom:16px;display:flex;align-items:center;gap:8px;}
+
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:24px;}
+.stat{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 18px;}
+.stat .num{font-size:26px;font-weight:800;margin-bottom:3px;}
+.stat .lbl{font-size:11px;color:var(--dim);}
+.stat.green .num{color:var(--green);}
+.stat.yellow .num{color:var(--yellow);}
+.stat.red .num{color:var(--red);}
+.stat.blue .num{color:var(--accent2);}
+
+table{width:100%;border-collapse:collapse;font-size:13px;}
+th{text-align:left;padding:9px 13px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--dim);border-bottom:1px solid var(--border);}
+td{padding:11px 13px;border-bottom:1px solid rgba(45,49,72,.5);vertical-align:top;}
+tr:last-child td{border-bottom:none;}
+tr:hover td{background:rgba(99,102,241,.04);}
+
+.bdone{background:rgba(16,185,129,.15);color:var(--green);border:1px solid rgba(16,185,129,.3);padding:2px 9px;border-radius:12px;font-size:11px;font-weight:700;white-space:nowrap;}
+.bpend{background:rgba(245,158,11,.15);color:var(--yellow);border:1px solid rgba(245,158,11,.3);padding:2px 9px;border-radius:12px;font-size:11px;font-weight:700;white-space:nowrap;}
+.bblock{background:rgba(239,68,68,.15);color:var(--red);border:1px solid rgba(239,68,68,.3);padding:2px 9px;border-radius:12px;font-size:11px;font-weight:700;white-space:nowrap;}
+.buser{background:rgba(34,211,238,.15);color:var(--accent2);border:1px solid rgba(34,211,238,.3);padding:2px 9px;border-radius:12px;font-size:11px;font-weight:700;white-space:nowrap;}
+.bwip{background:rgba(99,102,241,.15);color:var(--accent);border:1px solid rgba(99,102,241,.3);padding:2px 9px;border-radius:12px;font-size:11px;font-weight:700;white-space:nowrap;}
+
+.ver{display:inline-block;background:rgba(99,102,241,.1);color:#a5b4fc;border:1px solid rgba(99,102,241,.2);padding:1px 6px;border-radius:5px;font-size:10px;font-family:monospace;margin-left:5px;}
+code{font-family:monospace;font-size:12px;background:rgba(255,255,255,.07);padding:1px 5px;border-radius:4px;color:#93c5fd;}
+
+/* ── LAYERS DIAGRAM ─────────────────────────────────── */
+.arch{display:flex;flex-direction:column;gap:0;padding:8px;}
+.arch-level{border-radius:12px;border:2px solid;padding:16px 20px;position:relative;}
+.arch-label{font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.1em;margin-bottom:12px;opacity:.7;}
+.arch-nodes{display:flex;gap:10px;flex-wrap:wrap;}
+.arch-node{border-radius:8px;border:1px solid;padding:10px 14px;flex:1;min-width:130px;}
+.arch-node .n-title{font-size:13px;font-weight:700;margin-bottom:3px;}
+.arch-node .n-url{font-size:10px;font-family:monospace;opacity:.6;margin-bottom:5px;}
+.arch-node .n-desc{font-size:11px;opacity:.75;line-height:1.5;}
+.arch-node .n-tag{display:inline-block;font-size:9px;font-weight:700;text-transform:uppercase;padding:1px 6px;border-radius:4px;margin-top:5px;}
+
+.arch-arrow{text-align:center;padding:6px 0;color:var(--dim);font-size:12px;display:flex;align-items:center;gap:8px;}
+.arch-arrow::before,.arch-arrow::after{content:'';flex:1;height:1px;background:var(--border);}
+
+/* level colors */
+.lvl-3{border-color:var(--green);background:rgba(16,185,129,.04);}
+.lvl-3 .arch-label{color:var(--green);}
+.lvl-3 .arch-node{border-color:rgba(16,185,129,.25);background:rgba(16,185,129,.06);}
+.lvl-3 .arch-node .n-tag{background:rgba(16,185,129,.15);color:var(--green);}
+
+.lvl-2{border-color:var(--accent2);background:rgba(34,211,238,.03);}
+.lvl-2 .arch-label{color:var(--accent2);}
+.lvl-2 .arch-node{border-color:rgba(34,211,238,.25);background:rgba(34,211,238,.05);}
+.lvl-2 .arch-node .n-tag{background:rgba(34,211,238,.12);color:var(--accent2);}
+.lvl-2-inner{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px;}
+.lvl-2-main{border:1px solid rgba(34,211,238,.2);border-radius:8px;padding:12px;background:rgba(34,211,238,.04);}
+.lvl-2-main .m-title{font-size:13px;font-weight:700;color:var(--accent2);margin-bottom:4px;}
+.lvl-2-main .m-sub{font-size:11px;color:var(--dim);line-height:1.5;}
+.lvl-2-ui{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;}
+.ui-box{border:1px dashed rgba(34,211,238,.25);border-radius:6px;padding:8px 10px;background:rgba(34,211,238,.03);}
+.ui-box .u-title{font-size:12px;font-weight:700;color:var(--accent2);margin-bottom:2px;}
+.ui-box .u-url{font-size:10px;font-family:monospace;color:var(--dim);}
+.ui-box .u-who{font-size:10px;color:var(--yellow);margin-top:3px;}
+
+.lvl-1{border-color:var(--accent);background:rgba(99,102,241,.03);}
+.lvl-1 .arch-label{color:var(--accent);}
+.lvl-1 .arch-node{border-color:rgba(99,102,241,.3);}
+.core-med{background:rgba(245,158,11,.06);border-color:rgba(245,158,11,.3)!important;}
+.core-hub{background:rgba(16,185,129,.06);border-color:rgba(16,185,129,.3)!important;}
+.core-fin{background:rgba(99,102,241,.08);border-color:rgba(99,102,241,.4)!important;}
+.core-msg{background:rgba(34,211,238,.06);border-color:rgba(34,211,238,.3)!important;}
+.tag-med{background:rgba(245,158,11,.15);color:var(--yellow);}
+.tag-hub{background:rgba(16,185,129,.15);color:var(--green);}
+.tag-fin{background:rgba(99,102,241,.15);color:#a5b4fc;}
+.tag-msg{background:rgba(34,211,238,.15);color:var(--accent2);}
+
+.call-chip{display:inline-block;font-size:10px;font-family:monospace;background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:4px;padding:2px 6px;margin:2px 2px 0 0;color:var(--dim);}
+.call-chip.green{border-color:rgba(16,185,129,.3);color:rgba(16,185,129,.9);}
+.call-chip.yellow{border-color:rgba(245,158,11,.3);color:rgba(245,158,11,.9);}
+.call-chip.blue{border-color:rgba(99,102,241,.4);color:#a5b4fc;}
+.call-chip.cyan{border-color:rgba(34,211,238,.3);color:rgba(34,211,238,.9);}
+
+/* ── FLOW TABLE ─────────────────────────────────────── */
+.flow-tbl{width:100%;border-collapse:collapse;font-size:12px;}
+.flow-tbl th{padding:8px 12px;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);border-bottom:1px solid var(--border);background:rgba(255,255,255,.02);}
+.flow-tbl td{padding:9px 12px;border-bottom:1px solid rgba(45,49,72,.4);vertical-align:middle;}
+.flow-tbl tr:last-child td{border-bottom:none;}
+.flow-tbl tr:hover td{background:rgba(99,102,241,.04);}
+.who{font-weight:700;font-size:11px;padding:2px 7px;border-radius:10px;white-space:nowrap;}
+.who-caf{background:rgba(34,211,238,.12);color:var(--accent2);}
+.who-med{background:rgba(245,158,11,.12);color:var(--yellow);}
+.who-hub{background:rgba(16,185,129,.12);color:var(--green);}
+.who-fin{background:rgba(99,102,241,.15);color:#a5b4fc;}
+.who-msg{background:rgba(239,68,68,.12);color:#fca5a5;}
+.who-sc{background:rgba(16,185,129,.08);color:#6ee7b7;}
+.ep{font-family:monospace;font-size:11px;color:#93c5fd;}
+.note-box{background:rgba(99,102,241,.08);border-left:3px solid var(--accent);border-radius:0 6px 6px 0;padding:10px 14px;font-size:12px;color:var(--dim);line-height:1.6;margin-bottom:12px;}
+.note-box strong{color:var(--text);}
+
+/* ── MENSAJE CARDS ──────────────────────────────────── */
+.msg-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;}
+.msg-card{border:1px solid var(--border);border-radius:8px;padding:12px 14px;background:rgba(255,255,255,.02);}
+.msg-card.email{border-left:3px solid #f472b6;}
+.msg-card.whats{border-left:3px solid var(--green);}
+.msg-card .mc-when{font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--dim);margin-bottom:4px;}
+.msg-card .mc-title{font-size:13px;font-weight:700;margin-bottom:4px;}
+.msg-card .mc-tmpl{font-size:10px;font-family:monospace;color:#93c5fd;margin-bottom:6px;}
+.msg-card .mc-dest{font-size:11px;color:var(--dim);}
+.msg-card .mc-type{display:inline-block;font-size:9px;font-weight:700;text-transform:uppercase;padding:1px 6px;border-radius:3px;margin-bottom:6px;}
+.msg-card.email .mc-type{background:rgba(244,114,182,.15);color:#f472b6;}
+.msg-card.whats .mc-type{background:rgba(16,185,129,.15);color:var(--green);}
+
+/* ── SIM ─────────────────────────────────────────────── */
+.sim-wrap{display:grid;grid-template-columns:260px 1fr;gap:18px;}
+.sim-nav-list{display:flex;flex-direction:column;gap:3px;}
+.snav{padding:10px 14px;border-radius:7px;border:1px solid var(--border);cursor:pointer;transition:all .2s;font-size:12px;}
+.snav:hover{border-color:var(--accent);background:rgba(99,102,241,.06);}
+.snav.active{border-color:var(--accent);background:rgba(99,102,241,.12);color:#fff;}
+.snav.done{border-color:rgba(16,185,129,.3);opacity:.65;}
+.snav .sn{font-size:10px;font-weight:700;color:var(--dim);margin-bottom:2px;}
+.snav .st{font-weight:600;}
+.snav.active .sn{color:var(--accent);}
+.snav.done .sn{color:var(--green);}
+.ph-hdr{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);padding:5px 12px;background:rgba(255,255,255,.02);border-radius:5px;margin:6px 0 3px;}
+
+.sim-body{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:22px;}
+.sim-title{font-size:15px;font-weight:700;margin-bottom:6px;color:var(--accent2);}
+.sim-desc{font-size:12px;color:var(--dim);margin-bottom:18px;line-height:1.65;}
+.f-row{display:flex;gap:10px;margin-bottom:11px;align-items:flex-start;}
+.f-num{min-width:22px;height:22px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#fff;margin-top:1px;flex-shrink:0;}
+.f-num.g{background:var(--green);}
+.f-num.y{background:var(--yellow);color:#1a1d27;}
+.f-num.r{background:var(--red);}
+.f-num.p{background:#ec4899;}
+.f-text{font-size:12px;line-height:1.65;}
+.f-text .actor{font-weight:700;color:var(--accent2);}
+.f-text .ep2{font-family:monospace;font-size:11px;background:rgba(34,211,238,.08);padding:1px 5px;border-radius:4px;color:#93c5fd;}
+.f-text .data{font-family:monospace;font-size:10px;background:rgba(255,255,255,.04);padding:6px 9px;border-radius:5px;display:block;margin-top:5px;color:#d1d5db;line-height:1.55;white-space:pre-wrap;}
+
+.sim-btns{display:flex;gap:9px;margin-top:18px;padding-top:16px;border-top:1px solid var(--border);}
+.btn{padding:7px 18px;border-radius:7px;border:none;cursor:pointer;font-size:12px;font-weight:600;transition:all .15s;}
+.btnp{background:var(--accent);color:#fff;}
+.btnp:hover{background:#818cf8;}
+.btns{background:rgba(255,255,255,.06);color:var(--dim);border:1px solid var(--border);}
+.btns:hover{background:rgba(255,255,255,.1);color:var(--text);}
+.btn:disabled{opacity:.3;cursor:default;}
+
+/* mermaid */
+.mwrap{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:22px;overflow-x:auto;text-align:center;}
+.mermaid{min-width:500px;}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">C</div>
+  <div>
+    <h1>inovaweb-admin-financiera · CAF</h1>
+    <div class="sub">Centro de Administración Financiera — Nivel 2 · Panel de Estado 2026-06-06</div>
+  </div>
+  <div class="badge">▲ VPS activo · 89.116.25.222:8006</div>
+</header>
+
+<div class="tabs">
+  <div class="tab active" onclick="showTab('tareas',this)">📋 Tareas</div>
+  <div class="tab" onclick="showTab('capas',this)">🏗️ Capas</div>
+  <div class="tab" onclick="showTab('flujo',this)">🔄 Flujo &amp; Mensajes</div>
+  <div class="tab" onclick="showTab('sim',this)">🎮 Simulación Scraping</div>
+</div>
+
+<!-- ════════════════ TAREAS ════════════════ -->
+<div id="tab-tareas" class="panel active">
+  <div class="stats">
+    <div class="stat green"><div class="num">11</div><div class="lbl">Completadas</div></div>
+    <div class="stat yellow"><div class="num">3</div><div class="lbl">Pendientes ejecutor</div></div>
+    <div class="stat blue"><div class="num">2</div><div class="lbl">Acción usuario/VPS</div></div>
+    <div class="stat red"><div class="num">1</div><div class="lbl">Verificación QA</div></div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">✅ Ejecutadas</div>
+    <table>
+      <thead><tr><th>#</th><th>Tarea</th><th>Entregable clave</th><th>Ver.</th><th>Estado</th></tr></thead>
+      <tbody>
+        <tr><td><b>Sprint 1</b></td><td>Scaffolding completo: FastAPI + SQLAlchemy + schema SQL + auth JWT + audit + workers + UI HTMX + docs formales</td><td>database/001+002 · app/ completo · SECURITY.md</td><td><span class="ver">0.0.1</span></td><td><span class="bdone">✓</span></td></tr>
+        <tr><td><b>5</b></td><td>Reescribir clientes HTTP al contrato real de los 4 cores</td><td>finanzas_client.py · messages_client.py · onboarding.py (modelo prepago)</td><td><span class="ver">0.2.0</span></td><td><span class="bdone">✓</span></td></tr>
+        <tr><td><b>5b</b></td><td>Correcciones QA: bytes NUL, billing.py, auditoría de fallo saga</td><td>messages_client.py limpio · test saga fallo-wallet</td><td><span class="ver">0.2.0</span></td><td><span class="bdone">✓</span></td></tr>
+        <tr><td><b>6</b></td><td>Onboarding prepago: saga crea wallet en Medidor (no multi-API-keys)</td><td>onboarding.py → OnboardResult.wallet_id · rollback best-effort</td><td><span class="ver">0.2.0</span></td><td><span class="bdone">✓</span></td></tr>
+        <tr><td><b>7</b></td><td>Seed catálogo planes piloto Scraping (Free / Básico / Medio / Premium)</td><td>database/003_seed_scraping_plans.sql · centavos MXN BIGINT</td><td><span class="ver">0.3.0</span></td><td><span class="bdone">✓</span></td></tr>
+        <tr><td><b>8</b></td><td>CRUD clientes + API JSON /api/v2 con RBAC completo</td><td>api_router.py · admin_router.py · tests/test_task08.py (10 tests authz)</td><td><span class="ver">0.3.0</span></td><td><span class="bdone">✓</span></td></tr>
+        <tr><td><b>14</b></td><td>docker-compose + Dockerfile + red n8n_default + VPS up</td><td>docker-compose.yml · caf_app + caf_postgres healthy · /health → 200</td><td><span class="ver">0.0.1</span></td><td><span class="bdone">✓</span></td></tr>
+        <tr><td><b>15+15b</b></td><td>Flujo prepago end-to-end: plan → cargo Conekta → webhook → acreditar wallet. FIX-1…7 aplicados (idempotencia BD, HMAC, correlación purpose/amount, tope monto)</td><td>prepago.py · webhooks_router.py · database/004_payments_idempotency.sql</td><td><span class="ver">0.3.0</span></td><td><span class="bwip">Re-QA</span></td></tr>
+        <tr><td><b>20</b></td><td>Documentar contrato real del Medidor IA (authorize/finish/credit/balance)</td><td>docs/01-integracion-cores.md §3 · ADR-011</td><td><span class="ver">0.2.1</span></td><td><span class="bdone">✓</span></td></tr>
+        <tr><td><b>21</b></td><td>Integrar medidor_client en Scraping + migración 0004 (Company.medidor_wallet_id)</td><td>scraping: medidor_client.py · authorize/finish · search_sessions.medidor_hold_id</td><td>cross-repo</td><td><span class="bdone">✓</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="card-title">⏳ Pendientes — Ejecutor</div>
+    <table>
+      <thead><tr><th>#</th><th>Tarea</th><th>Bloqueo</th><th>Estado</th></tr></thead>
+      <tbody>
+        <tr><td><b>16</b></td><td><b>Onboarding completo:</b> CAF crea wallet en Medidor → llama <code>POST /companies/{id}/link-caf</code> en Scraping → alta usuario titular → activación email + WhatsApp via Centro-Mensajes<br><small style="color:var(--dim)">Spec listo: .vpm/tasks/task-16-onboarding-wallet-activacion.md</small></td><td>Requiere #18 (MEDIDOR_API_KEY) en runtime; tests con mocks no la necesitan</td><td><span class="bpend">Pendiente</span></td></tr>
+        <tr><td><b>15b</b></td><td><b>Re-verificar QA prepago:</b> compileall + migrar 001→004 sobre Postgres limpio + pytest completo. FIX-1…7 ya están en el árbol.</td><td>Ninguno</td><td><span class="bwip">Verificar</span></td></tr>
+        <tr><td><b>19,22</b></td><td><b>Hardening backlog:</b> retry de /finish, filtro company_id explícito en consultas, fail-closed en prod, rotar Bearer Scraping→Medidor</td><td>Diferido a pre-multi-cliente</td><td><span class="bpend">Backlog</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="card-title">👤 Pendientes — Usuario (VPS)</div>
+    <table>
+      <thead><tr><th>#</th><th>Acción</th><th>Comando</th><th>Estado</th></tr></thead>
+      <tbody>
+        <tr><td><b>18</b></td><td>Emitir API key ADMIN del Medidor → pegar en .env del CAF</td><td><code>cd /opt/inovaweb-medidor && bash vps/04_create_admin_key.sh</code><br>→ pegar <code>MEDIDOR_API_KEY=…</code> en <code>/opt/inovaweb-admin-financiera/.env</code></td><td><span class="buser">Acción VPS</span></td></tr>
+        <tr><td><b>1</b></td><td>DNS A records + bloques en Caddyfile del n8n-caddy-1</td><td><code>admin → 89.116.25.222</code> y <code>app → 89.116.25.222</code> TTL 300<br>+ bloques reverse_proxy en Caddy</td><td><span class="buser">Acción VPS</span></td></tr>
+        <tr><td><b>—</b></td><td>Commit/push árbol v0.3.0 (cambios sesión 2026-06-04 nunca commiteados)</td><td>Ver docs/HANDOFF-SESION.md</td><td><span class="bblock">Sin commit</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ════════════════ CAPAS ════════════════ -->
+<div id="tab-capas" class="panel">
+
+  <div class="note-box" style="margin-bottom:18px">
+    <strong>¿Cuál es cuál?</strong> — Los 4 cores Nivel 1 hacen cosas muy distintas:
+    <strong style="color:var(--yellow)">Medidor IA</strong> = wallet prepago (saldo en centavos, authorize/finish/credit).
+    <strong style="color:var(--green)">Hub-Pasarelas</strong> = gateway de pago real (Conekta) — cobra con tarjeta.
+    <strong style="color:#a5b4fc">Finanzas-Core</strong> = libro contable (ledger de asientos contables en MXN, fuente de verdad de ingresos).
+    <strong style="color:var(--accent2)">Centro-Mensajes</strong> = notificaciones (email/WhatsApp) vía plantillas.
+    El CAF (Nivel 2) orquesta los 4 en cada operación.
+  </div>
+
+  <div class="card">
+    <div class="card-title">🏗️ Arquitectura Inovaweb — 3 Niveles</div>
+    <div class="arch">
+
+      <!-- NIVEL 3 -->
+      <div class="arch-level lvl-3">
+        <div class="arch-label">NIVEL 3 — Apps Cliente (consumen el CAF para recargar y el Medidor para consumir IA)</div>
+        <div class="arch-nodes">
+          <div class="arch-node">
+            <div class="n-title">🔍 Scraping Universidades</div>
+            <div class="n-desc">Búsqueda semántica con IA. Primer piloto del CAF.</div>
+            <div style="margin-top:6px">
+              <span class="call-chip green">authorize →</span>
+              <span class="call-chip green">finish →</span>
+              <span class="call-chip cyan">notifica →</span>
+              <span class="call-chip blue">asientos →</span>
+            </div>
+            <span class="n-tag">Operativo (piloto)</span>
+          </div>
+          <div class="arch-node">
+            <div class="n-title">🏫 WebEscolar</div>
+            <div class="n-desc">ERP escolar single-tenant. Integración CAF futura.</div>
+            <span class="n-tag">Nivel 3 · futuro</span>
+          </div>
+          <div class="arch-node">
+            <div class="n-title">🎥 MicroFichas</div>
+            <div class="n-desc">Video IA multi-tenant. Integración CAF futura.</div>
+            <span class="n-tag">Nivel 3 · futuro</span>
+          </div>
+          <div class="arch-node">
+            <div class="n-title">🧾 Ecofile</div>
+            <div class="n-desc">Factura electrónica. Planeado.</div>
+            <span class="n-tag">Planeado</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="arch-arrow">↕ &nbsp;Scraping llama a CAF solo para onboarding y recargas. Para IA, llama directamente al Medidor (Nivel 1).</div>
+
+      <!-- NIVEL 2 -->
+      <div class="arch-level lvl-2">
+        <div class="arch-label">NIVEL 2 — CAF · inovaweb-admin-financiera (ESTE PROYECTO) · VPS 89.116.25.222:8006</div>
+        <div class="lvl-2-main">
+          <div class="m-title">⚙️ admin-financiera · FastAPI 3.12 + SQLAlchemy 2 async + PostgreSQL 16</div>
+          <div class="m-sub">Un solo contenedor Docker · Puerto interno 8001 · Puerto host 8006 · Conectado a red n8n_default (Caddy TLS)</div>
+          <div class="lvl-2-ui">
+            <div class="ui-box">
+              <div class="u-title">🖥️ Tablero Operador</div>
+              <div class="u-url">admin.inovaweb.com.mx</div>
+              <div class="m-sub" style="font-size:11px;margin-top:4px">CRUD clientes · catálogo · facturas · audit log · cierre mensual</div>
+              <div class="u-who">👤 Equipo interno Inovaweb</div>
+            </div>
+            <div class="ui-box">
+              <div class="u-title">🌐 Portal Cliente</div>
+              <div class="u-url">app.inovaweb.com.mx</div>
+              <div class="m-sub" style="font-size:11px;margin-top:4px">Saldo · consumo · facturas PDF/XML · recargas autoservicio</div>
+              <div class="u-who">👤 Cliente final (ej: TecnoEdu SA de CV)</div>
+            </div>
+          </div>
+        </div>
+        <div style="margin-top:10px;font-size:11px;color:var(--dim)">
+          También expone: <code>GET /health</code> · <code>POST /api/v2/*</code> (JSON para integraciones) · <code>POST /webhooks/hub-payment-paid</code> · <code>POST /webhooks/pac</code>
+        </div>
+      </div>
+
+      <div class="arch-arrow">↕ &nbsp;CAF llama a los 4 cores vía HTTP async (httpx). Los cores son API-only sin UI propia.</div>
+
+      <!-- NIVEL 1 -->
+      <div class="arch-level lvl-1">
+        <div class="arch-label">NIVEL 1 — Cores (API-only · sin UI · sin auth humano)</div>
+        <div class="arch-nodes">
+          <div class="arch-node core-med">
+            <div class="n-title" style="color:var(--yellow)">💳 Medidor IA</div>
+            <div class="n-url">medidor.inovaweb.com.mx</div>
+            <div class="n-desc"><b>Qué hace:</b> mantiene wallets prepago en centavos MXN. Mide cada llamada LLM y cobra el costo. Es la <b>fuente única de saldo y consumo de IA</b>.</div>
+            <div style="margin-top:6px">
+              <div class="n-desc" style="margin-bottom:4px">CAF llama con scope ADMIN:</div>
+              <span class="call-chip yellow">POST /v1/wallets</span>
+              <span class="call-chip yellow">POST /v1/wallets/{id}/credit</span>
+              <span class="call-chip yellow">GET /v1/wallets/{id}/balance</span>
+            </div>
+            <span class="n-tag" style="background:rgba(245,158,11,.15);color:var(--yellow)">Wallet prepago</span>
+          </div>
+          <div class="arch-node core-hub">
+            <div class="n-title" style="color:var(--green)">💰 Hub-Pasarelas</div>
+            <div class="n-url">hub.inovaweb.com.mx</div>
+            <div class="n-desc"><b>Qué hace:</b> procesa pagos reales con tarjeta vía <b>Conekta</b>. Cobra al cliente en su tarjeta bancaria. Confirma el pago con un webhook <code>payment.paid</code>.</div>
+            <div style="margin-top:6px">
+              <div class="n-desc" style="margin-bottom:4px">CAF llama para cobrar:</div>
+              <span class="call-chip green">POST /v1/charges</span>
+              <span class="call-chip green">← webhook payment.paid</span>
+            </div>
+            <span class="n-tag" style="background:rgba(16,185,129,.15);color:var(--green)">Gateway de pago</span>
+          </div>
+          <div class="arch-node core-fin">
+            <div class="n-title" style="color:#a5b4fc">📒 Finanzas-Core</div>
+            <div class="n-url">finanzas.inovaweb.com.mx</div>
+            <div class="n-desc"><b>Qué hace:</b> es el <b>libro contable</b> (ledger). Guarda asientos contables de cada ingreso en MXN. El CAF lo registra <i>después</i> de cada pago confirmado. Scraping también postea asientos de consumo IA directo.</div>
+            <div style="margin-top:6px">
+              <div class="n-desc" style="margin-bottom:4px">CAF llama para registrar:</div>
+              <span class="call-chip blue">POST /v1/entries</span>
+              <span class="call-chip blue">GET /v1/balance</span>
+            </div>
+            <span class="n-tag" style="background:rgba(99,102,241,.15);color:#a5b4fc">Libro contable</span>
+          </div>
+          <div class="arch-node core-msg">
+            <div class="n-title" style="color:var(--accent2)">✉️ Centro-Mensajes</div>
+            <div class="n-url">mensajes.inovaweb.com.mx</div>
+            <div class="n-desc"><b>Qué hace:</b> envía <b>emails y WhatsApp</b> por plantilla. El CAF lo invoca en cada evento relevante (activación, pago, vencimiento, etc.).</div>
+            <div style="margin-top:6px">
+              <div class="n-desc" style="margin-bottom:4px">CAF llama para notificar:</div>
+              <span class="call-chip cyan">send_email (template)</span>
+              <span class="call-chip cyan">send_whatsapp (template)</span>
+            </div>
+            <span class="n-tag" style="background:rgba(34,211,238,.15);color:var(--accent2)">Notificaciones</span>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /arch -->
+  </div>
+</div>
+
+<!-- ════════════════ FLUJO & MENSAJES ════════════════ -->
+<div id="tab-flujo" class="panel">
+
+  <div class="card" style="margin-bottom:18px">
+    <div class="card-title">✉️ Centro-Mensajes — todos los eventos de notificación del CAF</div>
+    <div class="note-box" style="margin-bottom:14px">
+      El CAF invoca al Centro-Mensajes en <strong>5 puntos distintos</strong> del ciclo de vida de un cliente. Cada llamada usa una plantilla nombrada y pasa variables. El Centro-Mensajes entrega por el canal adecuado (email transaccional o WhatsApp Business).
+    </div>
+    <div class="msg-grid">
+      <div class="msg-card email">
+        <div class="mc-type">📧 Email</div>
+        <div class="mc-when">Onboarding — Paso 3</div>
+        <div class="mc-title">Activación de cuenta</div>
+        <div class="mc-tmpl">caf-activacion-correo</div>
+        <div class="mc-dest">→ email_contacto del cliente<br>Variables: razon_social, activation_link (token 1-uso, exp 24h)</div>
+      </div>
+      <div class="msg-card whats">
+        <div class="mc-type">💬 WhatsApp</div>
+        <div class="mc-when">Onboarding — Paso 3 (opcional)</div>
+        <div class="mc-title">OTP de verificación</div>
+        <div class="mc-tmpl">caf-activacion-otp</div>
+        <div class="mc-dest">→ telefono del cliente<br>Variables: otp_code (6 dígitos, exp 10min). SMS fuera del piloto.</div>
+      </div>
+      <div class="msg-card email">
+        <div class="mc-type">📧 Email</div>
+        <div class="mc-when">Pago confirmado — Paso 6</div>
+        <div class="mc-title">Pago acreditado</div>
+        <div class="mc-tmpl">caf-pago-confirmado</div>
+        <div class="mc-dest">→ email_contacto del cliente<br>Variables: amount_mxn, saldo_nuevo, plan_nombre</div>
+      </div>
+      <div class="msg-card email">
+        <div class="mc-type">📧 Email</div>
+        <div class="mc-when">Worker overdue_notifier</div>
+        <div class="mc-title">Aviso de saldo bajo</div>
+        <div class="mc-tmpl">caf-saldo-bajo</div>
+        <div class="mc-dest">→ email_contacto del cliente<br>Variables: saldo_cents, umbral_cents, link_recarga</div>
+      </div>
+      <div class="msg-card email">
+        <div class="mc-type">📧 Email</div>
+        <div class="mc-when">Worker overdue_notifier</div>
+        <div class="mc-title">Cuenta suspendida por saldo cero</div>
+        <div class="mc-tmpl">caf-cuenta-suspendida</div>
+        <div class="mc-dest">→ email_contacto del cliente<br>Variables: fecha_suspension, link_recarga</div>
+      </div>
+      <div class="msg-card email">
+        <div class="mc-type">📧 Email</div>
+        <div class="mc-when">Worker invoice_retry / cierre mensual</div>
+        <div class="mc-title">Factura disponible (fase 4)</div>
+        <div class="mc-tmpl">caf-factura-disponible</div>
+        <div class="mc-dest">→ email_facturacion del cliente<br>Variables: folio_fiscal, total_mxn, link_pdf, link_xml</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:18px">
+    <div class="card-title">🔄 Flujo completo: qué llama a qué y cuándo</div>
+    <table class="flow-tbl">
+      <thead><tr><th>Fase</th><th>Quién actúa</th><th>Llama a</th><th>Endpoint</th><th>Para qué</th></tr></thead>
+      <tbody>
+        <tr style="background:rgba(16,185,129,.03)">
+          <td rowspan="5" style="font-weight:700;color:var(--green);vertical-align:middle">Onboarding<br><small style="color:var(--dim);font-weight:400">TASK-16</small></td>
+          <td><span class="who who-caf">CAF</span></td><td><span class="who who-caf">BD local</span></td><td class="ep">INSERT clients</td><td>Crea el registro del cliente con status=pending_wallet</td>
+        </tr>
+        <tr style="background:rgba(16,185,129,.03)">
+          <td><span class="who who-caf">CAF</span></td><td><span class="who who-med">Medidor IA</span></td><td class="ep">POST /v1/wallets</td><td>Crea la wallet prepago del cliente con saldo 0. Guarda wallet_id en clients.medidor_account_id</td>
+        </tr>
+        <tr style="background:rgba(16,185,129,.03)">
+          <td><span class="who who-caf">CAF</span></td><td><span class="who who-sc">Scraping</span></td><td class="ep">POST /companies/{id}/link-caf</td><td>Persiste caf_client_id + medidor_wallet_id en la tabla companies de Scraping</td>
+        </tr>
+        <tr style="background:rgba(16,185,129,.03)">
+          <td><span class="who who-caf">CAF</span></td><td><span class="who who-msg">Centro-Mensajes</span></td><td class="ep">send_email</td><td>Envía link de activación (template <b>caf-activacion-correo</b>, token 1-uso, exp 24h)</td>
+        </tr>
+        <tr style="background:rgba(16,185,129,.03)">
+          <td><span class="who who-caf">CAF</span></td><td><span class="who who-msg">Centro-Mensajes</span></td><td class="ep">send_whatsapp</td><td>OTP opcional (template <b>caf-activacion-otp</b>)</td>
+        </tr>
+
+        <tr style="background:rgba(16,185,129,.05)">
+          <td rowspan="5" style="font-weight:700;color:var(--yellow);vertical-align:middle">Pago<br><small style="color:var(--dim);font-weight:400">TASK-15</small></td>
+          <td><span class="who who-caf">CAF</span></td><td><span class="who who-hub">Hub-Pasarelas</span></td><td class="ep">POST /v1/charges</td><td>Inicia cargo en Conekta con el token de tarjeta del cliente. Guarda charge_id + status=initiated</td>
+        </tr>
+        <tr style="background:rgba(16,185,129,.05)">
+          <td><span class="who who-hub">Hub-Pasarelas</span></td><td><span class="who who-caf">CAF</span></td><td class="ep">POST /webhooks/hub-payment-paid</td><td>Notifica que el pago se confirmó. CAF valida HMAC + anti-replay + correlación purpose/amount</td>
+        </tr>
+        <tr style="background:rgba(16,185,129,.05)">
+          <td><span class="who who-caf">CAF</span></td><td><span class="who who-med">Medidor IA</span></td><td class="ep">POST /v1/wallets/{id}/credit</td><td><b>Acredita saldo</b> en la wallet prepago. request_id=caf-recharge-{id} garantiza idempotencia</td>
+        </tr>
+        <tr style="background:rgba(16,185,129,.05)">
+          <td><span class="who who-caf">CAF</span></td><td><span class="who who-fin">Finanzas-Core</span></td><td class="ep">POST /v1/entries</td><td><b>Registra asiento contable</b> en el libro contable. source_ref=caf-recharge-{id}. Es independiente de la wallet — sirve para reportes de ingresos, no para controlar saldo.</td>
+        </tr>
+        <tr style="background:rgba(16,185,129,.05)">
+          <td><span class="who who-caf">CAF</span></td><td><span class="who who-msg">Centro-Mensajes</span></td><td class="ep">send_email</td><td>Confirma recarga al cliente (template <b>caf-pago-confirmado</b>)</td>
+        </tr>
+
+        <tr style="background:rgba(99,102,241,.04)">
+          <td rowspan="3" style="font-weight:700;color:#a5b4fc;vertical-align:middle">Consumo IA<br><small style="color:var(--dim);font-weight:400">Scraping</small></td>
+          <td><span class="who who-sc">Scraping</span></td><td><span class="who who-med">Medidor IA</span></td><td class="ep">POST /operations/authorize</td><td>Reserva un HOLD de crédito estimado. El Medidor bloquea si saldo insuficiente.</td>
+        </tr>
+        <tr style="background:rgba(99,102,241,.04)">
+          <td><span class="who who-sc">Scraping</span></td><td><span class="who who-med">Medidor IA</span></td><td class="ep">POST /operations/finish</td><td>Liquida HOLD con costo real. Medidor debita wallet. CAF no participa en el consumo.</td>
+        </tr>
+        <tr style="background:rgba(99,102,241,.04)">
+          <td><span class="who who-sc">Scraping</span></td><td><span class="who who-fin">Finanzas-Core</span></td><td class="ep">POST /v1/entries</td><td>Scraping postea sus propios asientos de consumo IA directo (source_slug=scraping_*)</td>
+        </tr>
+
+        <tr style="background:rgba(34,211,238,.03)">
+          <td rowspan="2" style="font-weight:700;color:var(--accent2);vertical-align:middle">Portal<br><small style="color:var(--dim);font-weight:400">solo lectura</small></td>
+          <td><span class="who who-caf">CAF</span></td><td><span class="who who-med">Medidor IA</span></td><td class="ep">GET /v1/wallets/{id}/balance</td><td>Consulta saldo en tiempo real para mostrar en el portal cliente. El CAF no duplica este dato.</td>
+        </tr>
+        <tr style="background:rgba(34,211,238,.03)">
+          <td><span class="who who-caf">CAF</span></td><td><span class="who who-fin">Finanzas-Core</span></td><td class="ep">GET /v1/balance</td><td>Lee asientos para reportes de ingresos del tablero operador (/admin/dashboard)</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="card-title">🛡️ Webhook Conekta — guards de seguridad</div>
+    <div class="mwrap">
+      <div class="mermaid">
+flowchart TD
+  A[POST /webhooks/hub-payment-paid] --> B{HMAC valido?}
+  B -->|No| E1[HTTP 401 rechazado]
+  B -->|Si| C{Timestamp en ventana?}
+  C -->|Expirado| E2[HTTP 400 anti-replay]
+  C -->|OK| D{hub_payment_id ya existe?}
+  D -->|Si duplicado| OK1[HTTP 200 duplicate_ignored]
+  D -->|No| F{purpose + amount coinciden con recharge.initiated?}
+  F -->|No coincide| E3[HTTP 400 rechazado auditoria]
+  F -->|OK| G[INSERT payments ON CONFLICT DO NOTHING]
+  G --> H[POST Medidor: credit wallet]
+  H --> I[POST Finanzas-Core: asiento contable]
+  I --> J[send_email: pago-confirmado]
+  J --> K[HTTP 200 procesado]
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ════════════════ SIMULACIÓN ════════════════ -->
+<div id="tab-sim" class="panel">
+  <div style="font-size:12px;color:var(--dim);margin-bottom:14px">
+    Journey completo de <strong>TecnoEdu SA de CV</strong> como cliente piloto en Scraping Universidades — desde alta hasta consumo IA y consulta de saldo.
+    <span style="margin-left:10px;background:rgba(34,211,238,.1);color:var(--accent2);border:1px solid rgba(34,211,238,.25);padding:2px 9px;border-radius:10px;font-size:11px;font-weight:600;">Plan Básico · $99.00 MXN · Conekta sandbox</span>
+  </div>
+  <div class="sim-wrap">
+    <div class="sim-nav-list" id="snl">
+      <div class="ph-hdr">Onboarding</div>
+      <div class="snav active" onclick="gs(0)"><div class="sn">PASO 1</div><div class="st">Alta del cliente en CAF</div></div>
+      <div class="snav" onclick="gs(1)"><div class="sn">PASO 2</div><div class="st">Crear wallet en Medidor</div></div>
+      <div class="snav" onclick="gs(2)"><div class="sn">PASO 3</div><div class="st">Ligar Scraping + activación</div></div>
+      <div class="ph-hdr">Pago</div>
+      <div class="snav" onclick="gs(3)"><div class="sn">PASO 4</div><div class="st">Contratar Plan Básico</div></div>
+      <div class="snav" onclick="gs(4)"><div class="sn">PASO 5</div><div class="st">Webhook Conekta: pago confirmado</div></div>
+      <div class="snav" onclick="gs(5)"><div class="sn">PASO 6</div><div class="st">Acreditar wallet + libro contable</div></div>
+      <div class="ph-hdr">Consumo IA</div>
+      <div class="snav" onclick="gs(6)"><div class="sn">PASO 7</div><div class="st">Búsqueda semántica</div></div>
+      <div class="snav" onclick="gs(7)"><div class="sn">PASO 8</div><div class="st">Authorize → Finish</div></div>
+      <div class="snav" onclick="gs(8)"><div class="sn">PASO 9</div><div class="st">Portal: saldo y consumo</div></div>
+    </div>
+    <div class="sim-body">
+      <div id="sb"></div>
+      <div class="sim-btns">
+        <button class="btn btns" id="bp" onclick="prev()" disabled>← Anterior</button>
+        <button class="btn btnp" id="bn" onclick="nxt()">Siguiente →</button>
+        <button class="btn btns" onclick="rst()" style="margin-left:auto">↺ Reiniciar</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+mermaid.initialize({startOnLoad:false,theme:'dark',
+  themeVariables:{
+    background:'#1a1d27',primaryColor:'#6366f1',primaryTextColor:'#e2e8f0',
+    primaryBorderColor:'#2d3148',lineColor:'#6b7280',edgeLabelBackground:'#1a1d27',
+    clusterBkg:'#1a1d27',titleColor:'#e2e8f0',nodeTextColor:'#e2e8f0'
+  }
+});
+window.addEventListener('load',()=>mermaid.init(undefined,document.querySelectorAll('.mermaid')));
+
+function showTab(id,el){
+  document.querySelectorAll('.panel').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));
+  document.getElementById('tab-'+id).classList.add('active');
+  el.classList.add('active');
+}
+
+// ── SIMULATION DATA ───────────────────────────────────
+const steps=[
+{title:"Paso 1 — Alta del cliente en CAF",
+ desc:"El operador (o el cliente vía signup-request) envía los datos comerciales. El CAF crea el registro en la BD local con status=pending_wallet. Aún no hay wallet ni ligadura con Scraping.",
+ flows:[
+  {c:"",a:"Operador / Admin",ep:"POST /api/v2/clients",txt:"Envía datos del cliente:",d:'{\n  "razon_social": "TecnoEdu SA de CV",\n  "rfc": "TEC010101AAA",\n  "email_contacto": "admin@tecnoedu.mx",\n  "plan_initial": "basico"\n}'},
+  {c:"g",a:"CAF — api_router",ep:null,txt:"Valida JWT (rol admin) → llama onboarding.create_client()",d:null},
+  {c:"g",a:"CAF — BD PostgreSQL",ep:"INSERT clients",txt:"Crea registro:",d:"id               = 'caf-c1a2b3'\nrazon_social     = 'TecnoEdu SA de CV'\nrfc              = 'TEC010101AAA'\nstatus           = 'pending_wallet'\nmedidor_account_id = NULL   ← sin wallet aún"}
+]},
+{title:"Paso 2 — Crear wallet en el Medidor IA",
+ desc:"El CAF usa la key ADMIN del Medidor para crear la wallet prepago del cliente. external_user_id = Company.id de Scraping. El Medidor devuelve un UUID que el CAF guarda en clients.medidor_account_id.",
+ flows:[
+  {c:"",a:"CAF — onboarding.py",ep:"POST /v1/wallets",txt:"Llama al Medidor (scope ADMIN):",d:'POST https://medidor.inovaweb.com.mx/v1/wallets\nAuthorization: Bearer {MEDIDOR_API_KEY}\n\n{\n  "external_user_id": "scraping-co-001",\n  "tenant_id": "inovaweb",\n  "metadata": { "caf_client_id": "caf-c1a2b3" }\n}'},
+  {c:"y",a:"Medidor IA",ep:null,txt:"Crea wallet saldo=0, devuelve UUID:",d:'{\n  "id": "wlt-9f8e7d6c",\n  "external_user_id": "scraping-co-001",\n  "tenant_id": "inovaweb",\n  "balance_cents": 0,\n  "status": "active"\n}'},
+  {c:"g",a:"CAF — BD",ep:"UPDATE clients",txt:"Guarda wallet_id en el cliente:",d:"UPDATE clients\n  SET medidor_account_id = 'wlt-9f8e7d6c',\n      status = 'pending_activation'\nWHERE id = 'caf-c1a2b3'"}
+]},
+{title:"Paso 3 — Ligar Scraping + activación email + WhatsApp",
+ desc:"El CAF llama al endpoint interno de Scraping para persistir la ligadura (caf_client_id + medidor_wallet_id). Luego genera un token de activación y lo envía por email y (opcionalmente) OTP WhatsApp via Centro-Mensajes.",
+ flows:[
+  {c:"",a:"CAF — onboarding.py",ep:"POST /companies/{id}/link-caf",txt:"Liga la wallet en Scraping:",d:'POST https://scraping.inovaweb.com.mx/companies/scraping-co-001/link-caf\nAuthorization: Bearer {SCRAPING_ADMIN_KEY}\n\n{\n  "caf_client_id": "caf-c1a2b3",\n  "medidor_wallet_id": "wlt-9f8e7d6c"\n}'},
+  {c:"g",a:"Scraping — BD",ep:"UPDATE companies",txt:"Persiste la ligadura:",d:"UPDATE companies\n  SET caf_client_id     = 'caf-c1a2b3',\n      medidor_wallet_id = 'wlt-9f8e7d6c'\nWHERE id = 'scraping-co-001'"},
+  {c:"p",a:"CAF → Centro-Mensajes",ep:"send_email",txt:"Envía link de activación (1-uso, expira 24h):",d:'template: caf-activacion-correo\nto: admin@tecnoedu.mx\nvars:\n  razon_social: "TecnoEdu SA de CV"\n  activation_link: "https://app.inovaweb.com.mx/activate?token=tok_xyz"'},
+  {c:"p",a:"CAF → Centro-Mensajes",ep:"send_whatsapp",txt:"OTP opcional al teléfono del titular:",d:'template: caf-activacion-otp\nto: +525512345678\nvars:\n  otp_code: "847291"   ← expira en 10 min, 1 solo uso'}
+]},
+{title:"Paso 4 — Contratar Plan Básico ($99.00 MXN)",
+ desc:"El cliente activa su cuenta, entra al portal app.inovaweb.com.mx y selecciona el Plan Básico. El CAF inicia el cargo en Hub-Pasarelas (Conekta sandbox) y guarda el intento de recarga.",
+ flows:[
+  {c:"",a:"Cliente (portal)",ep:"POST /portal/recharge",txt:"Selecciona plan y envía token de tarjeta:",d:'{\n  "plan_id": "plan-basico",\n  "payment_source": "tok_conekta_sandbox_XXXX"\n}'},
+  {c:"",a:"CAF — prepago.py",ep:"POST /v1/charges",txt:"Valida tope ($50 ≤ monto ≤ MAX_RECARGA_CENTS) y llama al Hub:",d:'POST https://hub.inovaweb.com.mx/v1/charges\n\n{\n  "amount": 9900,\n  "currency": "MXN",\n  "payment_source": "tok_conekta_sandbox_XXXX",\n  "reference_id": "caf-recharge-r001"\n}'},
+  {c:"y",a:"Hub-Pasarelas (Conekta)",ep:null,txt:"Crea cargo en sandbox, status=pending:",d:'{ "charge_id": "ch_sandbox_8a9b0c", "status": "pending", "amount": 9900 }'},
+  {c:"",a:"CAF — BD",ep:"INSERT recharges",txt:"Registra el intento:",d:"recharge_id    = 'r001'\ncaf_client_id  = 'caf-c1a2b3'\nhub_payment_id = 'ch_sandbox_8a9b0c'\namount_cents   = 9900\npurpose        = 'plan_purchase'\nstatus         = 'initiated'"}
+]},
+{title:"Paso 5 — Webhook: pago confirmado por Conekta",
+ desc:"Hub-Pasarelas envía el evento payment.paid firmado con HMAC. El CAF valida la firma, el timestamp anti-replay, y correlaciona el cargo con el intento previo (purpose + amount) antes de proceder.",
+ flows:[
+  {c:"",a:"Hub-Pasarelas",ep:"POST /webhooks/hub-payment-paid",txt:"Envía evento firmado:",d:'X-Hub-Signature: sha256=abc123...\nX-Hub-Timestamp: 1749254400\n\n{\n  "event": "payment.paid",\n  "data": {\n    "transaction_id": "ch_sandbox_8a9b0c",\n    "amount": 9900,\n    "purpose": "plan_purchase"\n  }\n}'},
+  {c:"g",a:"CAF — webhooks_router",ep:null,txt:"Guards de seguridad (todos pasan ✓):",d:"✓ HMAC sha256 válido (tiempo-constante)\n✓ Timestamp en ventana tolerance_sec\n✓ hub_payment_id 'ch_sandbox_8a9b0c' no existe en BD\n✓ purpose='plan_purchase' coincide con r001\n✓ amount=9900 coincide con r001"},
+  {c:"g",a:"CAF — BD",ep:"INSERT payments",txt:"Inserta idempotente (ON CONFLICT DO NOTHING):",d:"INSERT INTO payments (hub_payment_id, amount_cents, ...)\nVALUES ('ch_sandbox_8a9b0c', 9900, ...)\nON CONFLICT (hub_payment_id) DO NOTHING\n-- trigger append-only: UPDATE/DELETE bloqueados por SQL"}
+]},
+{title:"Paso 6 — Acreditar wallet (Medidor) + registrar en libro contable (Finanzas-Core)",
+ desc:"Con el pago verificado, el CAF hace DOS llamadas separadas: (1) acredita saldo en el Medidor IA — esto controla el saldo real del cliente; (2) registra el asiento contable en Finanzas-Core — esto es el libro contable para reportes de ingresos. Son sistemas distintos con propósitos distintos.",
+ flows:[
+  {c:"y",a:"CAF → Medidor IA",ep:"POST /v1/wallets/{id}/credit",txt:"Acredita saldo prepago con request_id idempotente:",d:'POST https://medidor.inovaweb.com.mx/v1/wallets/wlt-9f8e7d6c/credit\n\n{\n  "amount_cents": 9900,\n  "request_id": "caf-recharge-r001",   ← idempotencia\n  "description": "Plan Básico · pago ch_sandbox_8a9b0c"\n}\n\n← { "balance_cents": 9900, "status": "credited" }'},
+  {c:"",a:"CAF → Finanzas-Core",ep:"POST /v1/entries",txt:"Registra asiento en el LIBRO CONTABLE (independiente del saldo en Medidor):",d:'POST https://finanzas.inovaweb.com.mx/v1/entries\n\n{\n  "source_ref": "caf-recharge-r001",   ← determinístico\n  "amount_cents": 9900,\n  "concept": "Recarga Plan Básico",\n  "client_external_id": "scraping-co-001"\n}\n\n← HTTP 201  (ledger append-only — para reportes, no controla saldo)'},
+  {c:"p",a:"CAF → Centro-Mensajes",ep:"send_email",txt:"Notifica al cliente:",d:'template: caf-pago-confirmado\nto: admin@tecnoedu.mx\nvars:\n  amount_mxn: "$99.00"\n  saldo_nuevo: "$99.00"\n  plan_nombre: "Básico"'}
+]},
+{title:"Paso 7 — El equipo de TecnoEdu lanza una búsqueda semántica",
+ desc:"Un usuario de TecnoEdu usa la app de Scraping para buscar universidades con programas de IA. Scraping primero reserva créditos en el Medidor antes de llamar al LLM. El CAF NO interviene en el consumo.",
+ flows:[
+  {c:"",a:"Usuario TecnoEdu",ep:"GET /search (Scraping)",txt:"Lanza búsqueda:",d:'query: "universidades con programa de Ingeniería en IA"\ntop_k: 10'},
+  {c:"y",a:"Scraping → Medidor IA",ep:"POST /operations/authorize",txt:"Reserva crédito estimado (HOLD):",d:'{\n  "wallet_id": "wlt-9f8e7d6c",\n  "estimated_cost_cents": 150,\n  "operation_id": "op-search-001"\n}\n\n← { "hold_id": "hold-aa11bb22", "disponible_cents": 9750 }'},
+  {c:"",a:"Scraping",ep:"LLM (OpenAI)",txt:"Llama al modelo de lenguaje (el hold está activo):",d:'Modelo: GPT-4o-mini + embeddings\nTokens: 1,200 input + 380 output\nCosto calculado por Medidor: 132 centavos MXN'}
+]},
+{title:"Paso 8 — Finish: liquida el HOLD con el costo real",
+ desc:"Scraping cierra el HOLD con el costo real (132 centavos). El Medidor libera los 150 reservados, debita solo 132. El saldo queda en 9,768 centavos ($97.68 MXN).",
+ flows:[
+  {c:"y",a:"Scraping → Medidor IA",ep:"POST /operations/finish",txt:"Cierra con costo real:",d:'{\n  "hold_id": "hold-aa11bb22",\n  "real_cost_cents": 132\n}\n\n← { "status": "settled", "balance_cents": 9768, "disponible_cents": 9768 }'},
+  {c:"",a:"Scraping → Finanzas-Core",ep:"POST /v1/entries",txt:"Scraping registra su propio asiento de consumo IA:",d:'source_slug: "scraping_search"\namount_cents: 132\nexternal_user_id: "scraping-co-001"'},
+  {c:"g",a:"Scraping → Cliente",ep:null,txt:"Devuelve resultados ✓",d:"10 universidades rankeadas por relevancia semántica"}
+]},
+{title:"Paso 9 — Portal cliente: saldo, consumo y resumen",
+ desc:"El cliente entra a app.inovaweb.com.mx/portal/dashboard. El CAF consulta el Medidor y Finanzas-Core en tiempo real y renderiza la vista. El CAF nunca almacena ni calcula el saldo — solo lo lee del Medidor.",
+ flows:[
+  {c:"",a:"Cliente",ep:"GET /portal/dashboard",txt:"Accede al portal con cookie JWT httpOnly",d:null},
+  {c:"y",a:"CAF → Medidor IA",ep:"GET /v1/wallets/{id}/balance",txt:"Consulta saldo en tiempo real:",d:'← { "balance_cents": 9768, "holds_total": 0, "disponible_cents": 9768 }'},
+  {c:"",a:"CAF → Finanzas-Core",ep:"GET /v1/balance",txt:"Lee asientos del mes para el resumen:",d:'← ingresos: 9900 · egresos_IA: 132 · neto: 9768'},
+  {c:"g",a:"CAF → Cliente (HTML)",ep:null,txt:"Renderiza dashboard Jinja2 + HTMX:",d:'┌──────────────────────────────────────┐\n│  TecnoEdu SA de CV  │  Plan: Básico  │\n├──────────────────────────────────────┤\n│  Saldo disponible           $97.68   │\n│  Consumido este mes          $1.32   │\n│  Recargas este mes          $99.00   │\n│  Último consumo: hace 2 min          │\n├──────────────────────────────────────┤\n│  [Recargar $]   [Ver facturas 📄]    │\n└──────────────────────────────────────┘'}
+]}
+];
+
+let cur=0;
+function render(i){
+  const s=steps[i];
+  let h=`<div class="sim-title">${s.title}</div><div class="sim-desc">${s.desc}</div>`;
+  s.flows.forEach((f,idx)=>{
+    h+=`<div class="f-row"><div class="f-num ${f.c||''}">${idx+1}</div><div class="f-text">`;
+    h+=`<span class="actor">${f.a}</span>`;
+    if(f.ep) h+=` → <span class="ep2">${f.ep}</span>`;
+    h+=` — ${f.txt}`;
+    if(f.d) h+=`<span class="data">${f.d}</span>`;
+    h+=`</div></div>`;
+  });
+  document.getElementById('sb').innerHTML=h;
+  document.querySelectorAll('.snav').forEach((el,idx)=>{
+    el.classList.remove('active','done');
+    if(idx===i) el.classList.add('active');
+    else if(idx<i) el.classList.add('done');
+  });
+  document.getElementById('bp').disabled=i===0;
+  const bn=document.getElementById('bn');
+  bn.textContent=i===steps.length-1?'✓ Completado':'Siguiente →';
+  bn.disabled=i===steps.length-1;
+}
+function gs(i){cur=i;render(i);}
+function nxt(){if(cur<steps.length-1){cur++;render(cur);}}
+function prev(){if(cur>0){cur--;render(cur);}}
+function rst(){cur=0;render(0);}
+render(0);
+</script>
+</body>
+</html>
