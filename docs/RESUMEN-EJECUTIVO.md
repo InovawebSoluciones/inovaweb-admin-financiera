@@ -1,6 +1,6 @@
 # Resumen Ejecutivo — Centro de Administración Financiera (CAF)
 
-**Fecha:** 2026-06-06 · **Audiencia:** dirección y stakeholders · **1 página**
+**Fecha:** 2026-06-07 · **Audiencia:** dirección y stakeholders · **1 página**
 
 ## Qué es
 
@@ -9,18 +9,13 @@ consumo IA, pagos, contabilidad y notificaciones) en un **producto comercial
 operable**: alta de clientes, cobranza, portal del cliente y tableros directivos,
 sin necesidad de tocar bases de datos manualmente.
 
-## Estado actual
+## Estado actual (2026-06-07)
 
-- **Fase del piloto:** modelo **prepago** (el cliente paga, se le acredita saldo y
-  el consumo de IA lo descuenta). Backend, alta de clientes (CRUD), portal y
-  tableros: **implementados**.
-- **Bloqueante técnico identificado en esta auditoría:** un desajuste en la ruta de
-  acreditación del CAF hacia el core de saldo (Medidor) impediría que las recargas
-  acrediten saldo. Es un arreglo pequeño (una línea), **aún no aplicado** por
-  política de la auditoría (no modificar código sin autorización). Debe corregirse y
-  re-probarse antes de procesar pagos reales.
-- **Diferido por decisión de dirección:** facturación electrónica CFDI (Fase 4,
-  hasta elegir PAC) y promociones avanzadas (Fase 5).
+- **Flujo de pago verificado E2E en producción:** recarga → cobro en pasarela (Hub) → notificación webhook → acreditación de saldo (Medidor) → asiento contable (Finanzas). Idempotente: un pago duplicado no duplica saldo.
+- **Onboarding completo:** alta de cliente en un formulario que activa los 4 cores + envía email de activación con enlace seguro.
+- **Facturación por consumo:** el cierre mensual calcula automáticamente la cuota del plan + el consumo de IA + los mensajes enviados por canal, y genera el borrador de factura.
+- **Portal del cliente y tablero operador:** operativos en frontend (acceso vía URL del VPS; DNS público pendiente de configurar).
+- **Diferido por decisión de dirección:** facturación electrónica CFDI 4.0 (Sprint 4, vía Ecofile) y promociones avanzadas (Sprint 5).
 
 ## Fortalezas (verificadas)
 

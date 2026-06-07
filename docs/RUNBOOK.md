@@ -429,6 +429,79 @@ asyncio.run(_ai_charge_for_period('<client_id>', '2026-05'))
 
 ---
 
+### 4.4 Síntoma: cliente no recibe email de activación al darse de alta
+
+**Contexto:** el onboarding (paso 5b) genera un token SHA-256 en `activation_tokens`
+y llama al Centro de Mensajes con la plantilla `caf-activacion-correo`. Si el
+email no llega, revisar en este orden:
+
+**Diagnóstico:**
+```sql
+-- ¿se generó el token?
+SELECT id, user_id, expires_at, used_at
+FROM activation_tokens
+WHERE user_id = (SELECT id FROM users WHERE email = 'cliente@ejemplo.com')
+ORDER BY created_at DESC LIMIT 1;
+```
+
+```bash
+# ¿el Centro de Mensajes recibió la solicitud?
+ssh root@89.116.25.222 "docker logs inovaweb-centro-mensajes 2>&1 | grep 'caf-activacion-correo' | tail -10"
+
+# ¿hay proveedor de email configurado en el Centro?
+ssh root@89.116.25.222 "docker exec inovaweb-centro-mensajes env | grep -E 'RESEND|SMTP|SENDGRID'"
+```
+
+**Fix:**
+- Token no generado: revisar logs del CAF — onboarding.py paso 5b.
+- Centro sin proveedor de email: configurar `RESEND_API_KEY` o credenciales SMTP en `.env` del Centro de Mensajes y reiniciar.
+- Plantilla `caf-activacion-correo` sin sembrar: correr el SQL del `seed-mensajes.md`.
+
+**Verificación:**
+```bash
+# reenviar email manualmente (endpoint admin)
+curl -X POST https://admin.inovaweb.com.mx/admin/clients/<id>/resend-activation \
+  -H "Authorization: Bearer <jwt>"
+```
+
+---
+
+### 4.5 Síntoma: concepto de factura falta en el cierre mensual (`pricing_missing`)
+
+**Contexto:** `billing.py` llama a `pricing.price_quantity()` para cada canal de
+consumo. Si no hay precio activo en `price_catalog` para esa unidad en el
+periodo, el concepto se omite con nivel WARNING (no rompe el cierre).
+
+**Diagnóstico:**
+```bash
+# buscar en logs los canales omitidos por falta de precio
+docker logs caf_app 2>&1 | grep "pricing_missing" | tail -20
+```
+
+```sql
+-- ver precios activos hoy
+SELECT meter, unit_code, amount_cents, valid_from, valid_to
+FROM price_catalog
+WHERE (valid_to IS NULL OR valid_to >= CURRENT_DATE)
+ORDER BY meter, unit_code;
+```
+
+**Fix:**
+```sql
+-- insertar precio faltante (ejemplo: email no tenía precio)
+INSERT INTO price_catalog (meter, unit_code, amount_cents, valid_from)
+VALUES ('message', 'email', 100, CURRENT_DATE);  -- $1.00 MXN por email
+```
+
+**Verificación:** re-correr el cierre del periodo afectado:
+```bash
+curl -X POST https://admin.inovaweb.com.mx/api/v2/billing/run-closing \
+  -H "Authorization: Bearer <jwt>" \
+  -d '{"period": "YYYY-MM", "force": true}'
+```
+
+---
+
 ## 5. Webhooks
 
 ### 5.1 Síntoma: PAC dice que envió webhook pero la factura sigue en

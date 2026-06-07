@@ -7,6 +7,44 @@ Orden cronológico inverso: lo más reciente primero.
 
 ---
 
+## [0.5.0] — 2026-06-07 — Grupo 3: billing consumo + onboarding completo + hardening + frontend
+
+> Sesión v2 + v3 (2026-06-07). Implementación ejecutada por Claude Code en paralelo (4 tareas).
+> Estado verificado E2E: flujo de pago completo, saldo Medidor $500, asiento Finanzas, idempotente.
+> **Fuente de verdad**: CLAUDE.md §12 (docs formales generados en traslada 2026-06-07).
+
+### Agregado
+- `app/core/clients/scraping_client.py` — cliente al core de Scraping para `POST /companies/{id}/link-caf`. Auth: Bearer admin. Cableado en saga de onboarding.
+- `database/005_activation_tokens.sql` — tabla `activation_tokens(id, user_id, token_hash UNIQUE, expires_at, used_at)` para activación de cuenta vía email (SHA-256, 24 h, single-use).
+- `database/006_idempotencia.sql` — índice parcial UNIQUE en `clients(request_id)` para idempotencia del onboarding atómico.
+- `database/007_price_catalog.sql` — catálogo de precios público: `price_catalog(id, meter, unit_code, amount_cents, valid_from, valid_to)`. Incluye entradas semilla para IA/token, email, whatsapp, sms.
+- `app/services/pricing.py` — función `price_quantity(meter, unit_code, quantity)` que lee `price_catalog` y devuelve el cargo a precio público (no costo crudo Medidor).
+- `app/core/clients/messages_client.get_usage_by_channel()` — nuevo método que llama `GET /v1/reports/usage?group_by=channel,client` y devuelve `{canal: cantidad}`. Usado por billing para facturar por canal.
+- Frontend Jinja2 + HTMX: templates base, admin/dashboard, admin/clients, portal/dashboard, portal/invoices.
+- `docs/MODELO-COBRO.md` — descripción del modelo de tarificación: precio público vs. costo COGS.
+
+### Cambiado
+- `app/services/onboarding.py` — saga extendida con paso 2b (link-caf en Scraping con compensación) y paso 5b (token SHA-256 + email de activación con variables `nombre`, `token_url`, `expiracion_horas`). Campo nuevo `scraping_company_id: int | None`.
+- `app/services/billing.py` — secciones 2b (consumo IA vía `medidor.get_usage_summary()` → `price_quantity()`) y 2c (mensajes por canal vía `messages.get_usage_by_channel()` → `price_quantity()`). Asiento Finanzas best-effort en `_close_one_subscription`.
+- `app/core/clients/messages_client.py` — `get_usage()` corregido: ruta era `/v1/usage` (inexistente), ahora `/v1/reports/usage?group_by=client` (verificado contra fuente del Centro de Mensajes). Docstrings completos.
+- `app/core/config.py` — nuevas vars: `SCRAPING_BASE_URL`, `SCRAPING_ADMIN_KEY`, `HUB_WEBHOOK_SECRET`, `MAX_RECARGA_CENTS` (tope de recarga; default 500,000 MXN en centavos).
+- `.env.example` — añadidas todas las vars nuevas con placeholders.
+
+### Corregido
+- **D1**: `scraping_client.py` enviaba `caf_client_id` como `str`; Scraping esperaba `int` (BIGINT). Corregido en cliente CAF y en el modelo + router de Scraping (con migración `alembic 0005_caf_client_id_bigint`).
+- **C1** (sesión anterior): `medidor_client.py` rutas de `credit` y `suspend_wallet` verificadas contra fuente real del Medidor y corregidas. Pytest 3/3 PASSED en VPS.
+- Template `caf-activacion-correo`: variables ajustadas de `{{nombre}}` (doble llave, incorrecto) a `{nombre}`, `{token_url}`, `{expiracion_horas}` (llave simple, contrato real del Centro de Mensajes).
+- Hallazgo contradicción doc: `suspend_wallet` usa `/admin/v1/wallets/{id}/suspend` (correcto, verificado en fuente Medidor).
+
+### Hardening H1-H5
+- **H1**: Idempotencia de onboarding por `request_id` (índice UNIQUE + check antes del INSERT).
+- **H2**: Retry con backoff exponencial para llamadas a cores (en `_base.CoreClient`).
+- **H3**: Fail-closed en prod — si `ENV=production`, falla abierta en onboarding lanza excepción; en dev/staging degrada graceful.
+- **H4**: Tope de recarga configurable `MAX_RECARGA_CENTS` (default 50,000,000 = $500,000 MXN). Rechaza con 422 si se excede.
+- **H5**: Webhook de pago filtra por `client_id` del JWT — no puede acreditar saldo de otro cliente.
+
+---
+
 ## [Sin versión] — 2026-06-06 — Auditoría global + documentación
 
 > Sesión de auditoría global de la plataforma (6 proyectos). No modifica código.

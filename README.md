@@ -6,16 +6,7 @@ Inovaweb que convierte la infraestructura técnica de los 4 cores Nivel 1
 comercial completo: onboarding atómico, catálogos, planes, promociones,
 cobranza con CFDI 4.0, portal cliente, tableros internos.
 
-**Estado:** sprint 1 cerrado (scaffolding + saga de onboarding + auth + workers);
-clientes HTTP a los cores alineados al contrato real y onboarding reescrito a
-modelo **prepago** (recarga de wallet en el Medidor) para el piloto Scraping.
-**En curso (working tree, sin commit):** flujo prepago end-to-end
-`app/services/prepago.py` + webhook `POST /webhooks/hub-payment-paid` (HMAC +
-anti-replay + idempotencia BD) + compra de plan en el portal + seed de planes
-(`database/003`) + índice de idempotencia (`database/004`). Pendiente: cerrar la
-verificación QA de las correcciones #15b, CRUD/API `/api/v2` (#8) y onboarding
-completo con activación email/WhatsApp (#16). Estado de continuidad detallado en
-`docs/HANDOFF-SESION.md`.
+**Estado (2026-06-07):** flujo de pago E2E verificado en prod (recarga → Hub → webhook HMAC → CAF → Medidor → Finanzas). Onboarding atómico con saga cross-core + activación por email (token SHA-256). Billing por consumo IA + mensajes por canal (`price_catalog`). Hardening H1-H5. Frontend Jinja2+HTMX operativo (admin + portal). Pendiente: DNS/TLS `admin/app.inovaweb.com.mx`, proveedor email en Centro de Mensajes, smoke test real con Scraping. Ver `CLAUDE.md §12` para pendientes detallados.
 
 ---
 
@@ -56,17 +47,18 @@ cross-domain. Caddy del stack n8n hace TLS y reverse proxy.
 | Passwords | `app/core/password.py` | Argon2id |
 | Audit log | `app/core/audit.py` | Writer al log inmutable |
 | Observabilidad | `app/core/observability.py` | Logging JSON + request-id |
-| Clientes cores | `app/core/clients/*` | medidor / hub / finanzas / messages / pac |
+| Clientes cores | `app/core/clients/*` | medidor / hub / finanzas / messages / scraping / pac |
 | Router salud | `app/routers/health_router.py` | `/health`, `/health/db` |
 | Router auth | `app/routers/auth_router.py` | `/login`, `/logout`, `/signup-request` |
 | Router admin | `app/routers/admin_router.py` | `/admin/*` (UI operador) |
 | Router portal | `app/routers/portal_router.py` | `/portal/*` (UI cliente) |
 | Router API | `app/routers/api_router.py` | `/api/v2/*` (JSON) |
 | Router webhooks | `app/routers/webhooks_router.py` | `/webhooks/pac`, `/webhooks/hub-payment-paid` |
-| Servicio onboarding | `app/services/onboarding.py` | Saga de alta atómica cross-core |
+| Servicio onboarding | `app/services/onboarding.py` | Saga de alta atómica cross-core + link Scraping + token activación |
 | Servicio prepago | `app/services/prepago.py` | Cargo Hub → acreditación wallet Medidor (piloto) |
-| Servicio billing | `app/services/billing.py` | Cierre mensual + cálculo de cargos |
-| Servicio invoicing | `app/services/invoicing.py` | Emisión + timbrado PAC |
+| Servicio billing | `app/services/billing.py` | Cierre mensual: plan + overage + IA + mensajes por canal |
+| Servicio pricing | `app/services/pricing.py` | Tarificación a precio público vía `price_catalog` |
+| Servicio invoicing | `app/services/invoicing.py` | Emisión + timbrado (Ecofile, pendiente sprint 4) |
 | Servicio promotions | `app/services/promotions.py` | Cupones, descuentos, volumen |
 | Worker mensual | `app/workers/monthly_closing.py` | Job nocturno día 1 |
 | Worker reintento | `app/workers/invoice_retry.py` | Reintento timbrado fallido |

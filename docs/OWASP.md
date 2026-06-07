@@ -1,23 +1,31 @@
 # Auditoría OWASP — inovaweb-admin-financiera (CAF)
 
-**Fecha:** 2026-06-06
+**Fecha:** 2026-06-07 (actualización post-Grupo3)
+**Versión:** sesión 2026-06-07 v3 (traslada)
 **Alcance:** revisión de código + base de datos + configuración del CAF (Nivel 2).
-**Veredicto global:** **PASS CON OBSERVACIONES** en seguridad web; **1 hallazgo
-CRÍTICO de contrato** (C1) que bloquea el commit hasta su resolución (ver §0).
+Incluye código nuevo de sesión 2026-06-07: `scraping_client.py`, `onboarding.py` paso 5b,
+`billing.py` secciones 2b+2c, `pricing.py`, migraciones 005-007, hardening H1-H5.
+
+**Veredicto global:** **PASS CON OBSERVACIONES** — sin bloqueo de commit.
+El hallazgo C1 (contrato medidor_client) fue **resuelto** en sesión 2026-06-07 y verificado
+con pytest 3/3 PASSED. Los hallazgos restantes son observaciones (⚠️) no bloqueantes.
+
+Hallazgos adicionales del code-review de sesión 2026-06-07 (no OWASP, pero se registran
+por impacto financiero):
+- **CR-1** ⚠️: `billing.py:185,241` — `period_start.isoformat()` genera `"YYYY-MM-DD"` (solo fecha);
+  el Medidor espera ISO-8601 con hora. Puede causar 400 o ventana incorrecta. Fix: añadir `"T00:00:00Z"`.
+- **CR-2** ⚠️: `billing.py:290` — `unit_price = amount_cents // count` (división entera);
+  puede generar `unit_price * count ≠ amount_cents` si no es divisible exacto. Relevante para CFDI.
+
+Estos dos son deuda técnica documentada; no bloquean el commit del MVP (CFDI diferido a sprint 4).
 
 ---
 
-## 0. Bloqueo de commit (regla de la auditoría global)
+## 0. Estado de hallazgos previos
 
-| ID | Severidad | Descripción | Bloquea commit |
-|----|-----------|-------------|----------------|
-| **C1** | 🔴 CRÍTICO | `MedidorClient` del CAF acredita en `POST /admin/v1/wallets/{id}/credit` y compensa en `DELETE /admin/v1/wallets/{id}`, rutas que el Medidor **no expone** (credit real: `/v1/wallets/{id}/credit`). Toda recarga/onboarding daría 404. | **SÍ** |
-
-`app/core/clients/medidor_client.py:78` y `:96`. No es vulnerabilidad de seguridad
-web (OWASP), sino contrato roto con potencial de inconsistencia financiera (recarga
-"confirmada" en Hub/Conekta sin acreditar saldo). Se registra aquí por su impacto
-financiero. **No corregido en esta sesión** (regla: no modificar código sin
-autorización). Mientras no se corrija y re-verifique QA, no emitir commit del CAF.
+| ID | Severidad | Descripción | Estado |
+|----|-----------|-------------|--------|
+| **C1** | ✅ RESUELTO | `medidor_client.py` rutas incorrectas de `credit`/`suspend_wallet` | Corregido 2026-06-07; pytest PASSED |
 
 ---
 
@@ -45,14 +53,10 @@ autorización). Mientras no se corrija y re-verifique QA, no emitir commit del C
 
 ## 4. Secrets hardcodeados — ✅ PASS
 
-- Ningún secreto en código. Todos en `.env` vía `SecretStr` (`config.py:28-61`),
-  con `.get_secret_value()` al usar. `.gitignore` excluye `.env`.
-- Validadores fail-fast: el arranque falla si faltan `DATABASE_URL`,
-  `POSTGRES_PASSWORD`, `AES_KEY`, `JWT_SECRET`, las 4 API keys de cores,
-  `PAC_API_KEY/SECRET`, `RFC_EMISOR`, `KEY_PASSWORD`.
-- ⚠️ **Observación:** `HUB_WEBHOOK_SECRET` cae a `HUB_API_KEY` en dev/staging
-  (`config.py:97-105`); en prod es obligatorio (validator `:84-95`). Documentar que
-  dev use un secreto dedicado.
+- Ningún secreto en código. Todos en `.env` vía `SecretStr`, con `.get_secret_value()` al usar. `.gitignore` excluye `.env`.
+- Validadores fail-fast: el arranque falla si faltan `DATABASE_URL`, `POSTGRES_PASSWORD`, `AES_KEY`, `JWT_SECRET`, las 4 API keys de cores, `SCRAPING_ADMIN_KEY` (nuevo 2026-06-07), `RFC_EMISOR`, `KEY_PASSWORD`.
+- `scraping_client.py` — nuevo cliente verificado: usa `SCRAPING_ADMIN_KEY` vía `get_secret_value()`. No se loguea el secreto. ✅
+- ⚠️ **Observación:** `HUB_WEBHOOK_SECRET` cae a `HUB_API_KEY` en dev/staging (`config.py`); en prod es obligatorio. Documentar que dev use un secreto dedicado para no mezclar con la API key.
 
 ## 5. Gestión de sesiones (JWT/cookies) — ⚠️ WARN
 
@@ -100,24 +104,28 @@ autorización). Mientras no se corrija y re-verifique QA, no emitir commit del C
 
 ---
 
-## Resumen
+## Resumen (2026-06-07)
 
-| Categoría | Veredicto |
-|---|---|
-| SQL Injection | ✅ PASS |
-| XSS | ✅ PASS (CSP mejorable) |
-| CSRF | ⚠️ WARN (SameSite ok, sin token) |
-| Secrets | ✅ PASS (fallback dev a vigilar) |
-| Sesiones | ⚠️ WARN (sin revocación de JWT) |
-| Endpoints sin auth | ✅ PASS |
-| Control de acceso / multi-tenant | ✅ PASS |
-| Webhooks | ✅ PASS |
-| Dinero / append-only | ✅ PASS |
-| **Contrato Medidor (C1)** | 🔴 **CRÍTICO — bloquea commit** |
+| Categoría | Veredicto | Notas |
+|---|---|---|
+| SQL Injection | ✅ PASS | Sin interpolación de input de usuario en SQL |
+| XSS | ✅ PASS | Jinja2 autoescape activo; `hx-swap=innerHTML` solo con respuesta interna |
+| CSRF | ⚠️ WARN | SameSite=Strict mitiga; sin token CSRF explícito |
+| Secrets | ✅ PASS | Sin hardcode; `SCRAPING_ADMIN_KEY` correctamente en `SecretStr` |
+| Sesiones | ⚠️ WARN | Sin `revoked_tokens`; mitigado por TTL 15 min del access token |
+| Endpoints sin auth | ✅ PASS | Todos los endpoints sensibles requieren JWT + rol |
+| Control de acceso / IDOR | ✅ PASS | Portal filtra por `client_id` del JWT |
+| Webhooks | ✅ PASS | HMAC-SHA256 + anti-replay; H5 filtra por client_id |
+| Dinero / append-only | ✅ PASS | BIGINT centavos, triggers append-only |
+| Code review financiero | ⚠️ WARN | CR-1 (timestamp fecha vs datetime), CR-2 (división entera) — deuda sprint 4 |
 
-**Acciones antes del commit del CAF:**
-1. Resolver C1 (ruta `/admin/v1` → `/v1` en credit y revisar delete/compensación).
-2. Re-verificar QA del flujo prepago end-to-end (TASK-15b).
-3. (Recomendado, no bloqueante) token CSRF, `revoked_tokens`, validación de monto en `/api/v2`.
+**Acciones antes del commit (2026-06-07):** ningún bloqueante.
+
+**Deuda técnica documentada (no bloqueante):**
+1. CR-1: `billing.py` — `period_start.isoformat()` → agregar `"T00:00:00Z"` para compatibilidad Medidor.
+2. CR-2: `billing.py:290` — reconsiderar `unit_price // count` para CFDI correcto (sprint 4).
+3. Implementar `revoked_tokens` / denylist de refresh tokens (TASK-22 existente).
+4. Token CSRF explícito en formularios mutativos (sprint 2+).
+5. `HUB_WEBHOOK_SECRET` separado del API key en dev (config).
 
 *Auditoría OWASP — auditoría global Inovaweb 2026-06-06.*

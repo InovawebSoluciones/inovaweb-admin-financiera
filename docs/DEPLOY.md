@@ -129,20 +129,35 @@ Si falla 7–10, evaluar caso por caso; pueden no requerir rollback.
 
 ## 4. Migraciones SQL
 
-### 4.0 Migraciones del piloto prepago (003 + 004)
+### 4.0 Migraciones acumuladas (003 → 007)
 
-Al desplegar el flujo prepago por primera vez, aplicar en orden tras `001`+`002`:
+Aplicar en orden tras `001`+`002`. Todas son idempotentes o append-only.
 
-- `database/003_seed_scraping_plans.sql` — seed de planes del piloto Scraping
-  (free `10000` / básico `9900` / medio `20000` / premium `40000` centavos).
-- `database/004_payments_idempotency.sql` — índice ÚNICO PARCIAL
-  `uq_payments_hub` (idempotencia del webhook del Hub). Idempotente
-  (`IF NOT EXISTS`); no viola append-only.
+| Archivo | Qué hace | Sesión |
+|---------|----------|--------|
+| `003_seed_scraping_plans.sql` | Seed planes Free/Básico/Medio/Premium Scraping | 2026-06-04 |
+| `004_payments_idempotency.sql` | Índice UNIQUE `uq_payments_hub` en `payments` | 2026-06-04 |
+| `005_activation_tokens.sql` | Tabla `activation_tokens` — tokens SHA-256 activación email | 2026-06-07 |
+| `006_idempotencia.sql` | Índice UNIQUE parcial `clients(request_id)` | 2026-06-07 |
+| `007_price_catalog.sql` | Tabla `price_catalog` + seed precios públicos por canal | 2026-06-07 |
 
-Verificar el índice tras aplicar:
+Aplicar las migraciones 005-007 desde PowerShell (si aún no están aplicadas):
+```powershell
+# backup previo
+ssh root@89.116.25.222 "docker exec caf_postgres pg_dump -U caf -d admin_financiera | gzip > /backups/caf-pre-grupo3-$(date +%Y%m%d-%H%M%S).sql.gz"
+
+foreach ($f in @("005_activation_tokens.sql","006_idempotencia.sql","007_price_catalog.sql")) {
+  Get-Content ".\database\$f" `
+    | ssh root@89.116.25.222 "docker exec -i caf_postgres psql -U caf -d admin_financiera -v ON_ERROR_STOP=1"
+  Write-Host "$f OK"
+}
+```
+
+Verificar:
 ```bash
 docker exec caf_postgres psql -U caf -d admin_financiera \
-  -c "\d payments" | grep uq_payments_hub
+  -c "\dt" | grep -E "activation_tokens|price_catalog"
+# debe listar ambas tablas nuevas
 ```
 
 ### 4.1 Regla crítica

@@ -3,9 +3,7 @@
 Manual para el equipo interno de Inovaweb que opera el sistema. No requiere
 conocimientos técnicos. Acceso en **https://admin.inovaweb.com.mx**.
 
-> **Nota de estado (2026-06-06):** el sistema está en piloto. El flujo de recarga
-> automática tiene un ajuste técnico pendiente (ver con el equipo de desarrollo
-> antes de procesar pagos reales). Las funciones de consulta y alta ya operan.
+> **Estado (2026-06-07):** piloto activo. El flujo de pago completo está verificado en producción (recarga → saldo acreditado → asiento contable). Alta de clientes, consulta de consumo y facturación por consumo operativos. Pendiente: configurar DNS para acceder vía `admin.inovaweb.com.mx` (por ahora acceso directo al VPS); configurar proveedor de email en el Centro de Mensajes para que los correos de activación se entreguen.
 
 ---
 

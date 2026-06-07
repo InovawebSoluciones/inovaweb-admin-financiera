@@ -515,14 +515,112 @@ del consumidor es trabajo aparte.
 
 ---
 
+## ADR-012: Facturación CFDI 4.0 vía Ecofile (app propia) en lugar de PAC externo
+**Fecha:** 2026-06-07
+**Estado:** Aprobado (diferido a sprint 4)
+
+### Contexto
+El CAF necesita emitir CFDIs 4.0 timbrados para que las facturas sean fiscalmente válidas en México.
+La decisión original (ADR-005) eligió un adaptador PAC intercambiable (Facturama/Factible/Edicom).
+Inovaweb está desarrollando su propia aplicación de facturación electrónica llamada **Ecofile**
+que implementa el ciclo completo CFDI 4.0 + timbrado + descarga PDF/XML.
+
+### Decisión
+El CAF consumirá Ecofile vía API HTTP (contrato interno Inovaweb) en lugar de integrar directamente
+con un PAC externo. `pac_client.py` se reemplazará por `ecofile_client.py` cuando Ecofile exponga
+su API. La lógica de `invoicing.py` permanece aislada detrás del adaptador (ADR-005 sigue vigente).
+
+### Alternativas consideradas
+- **PAC externo (Facturama, Factible, Edicom):** descartado como primera opción porque Ecofile
+  brindará la misma funcionalidad con costo controlado y sin dependencia de terceros. Queda como
+  fallback si Ecofile se retrasa.
+- **Timbre manual (operador descarga XML, timbra en portal del PAC):** descartado; no escala y
+  rompe el flujo automatizado de `invoice_retry`.
+
+### Consecuencias
+- ✅ Sin costo por timbre externo una vez Ecofile esté operativo.
+- ✅ El CAF y Ecofile comparten el ecosistema Inovaweb; la integración es más directa.
+- ⚠️ El contrato de API de Ecofile aún no está definido. `invoicing.py` usa placeholders hasta
+  que se firme el contrato.
+- ⚠️ La facturación CFDI queda diferida hasta sprint 4 (Ecofile debe estar listo primero).
+- Las facturas en el MVP quedan en estado `draft` / `pending_stamp`; el operador ve el importe
+  pero no puede entregar XML/PDF firmados al cliente hasta sprint 4.
+
+---
+
+## ADR-013: Tarificación a precio público vía `price_catalog`, no al costo COGS del Medidor
+**Fecha:** 2026-06-07
+**Estado:** Aprobado
+
+### Contexto
+El Medidor reporta el **costo crudo** de las operaciones de IA (lo que Inovaweb paga al proveedor LLM).
+Este costo no puede facturarse directamente al cliente: incluye el margen de Inovaweb, varía por modelo
+y no coincide con el precio de lista pactado en el contrato del cliente.
+
+### Decisión
+El CAF mantiene una tabla `price_catalog(meter, unit_code, amount_cents, valid_from, valid_to)`
+con el **precio público** por unidad de consumo (IA/token, email, whatsapp, sms).
+`billing.py` llama a `pricing.price_quantity()` para calcular el cargo a facturar;
+el costo COGS del Medidor se usa únicamente para calcular margen interno, no se asienta
+en `invoice_items`.
+
+### Alternativas consideradas
+- **Facturar el costo crudo del Medidor más un porcentaje de markup fijo:** descartado; el markup
+  varía por cliente (plan, descuento), y el precio del LLM puede fluctuar sin aviso.
+- **Precio fijo por "paquete" (ilimitado dentro del plan):** posible en planes futuros, pero el
+  piloto requiere facturación por consumo real.
+
+### Consecuencias
+- ✅ El precio de lista es administrable desde la UI (`/admin/catalog`) sin tocar código.
+- ✅ El margen queda implícito: `price_catalog.amount_cents - medidor.cost_cents` por unidad.
+- ✅ Múltiples canales con precio distinto (email ≠ whatsapp ≠ token IA) en la misma tabla.
+- ⚠️ Requiere mantener `price_catalog` actualizado cuando cambien los precios. El cierre mensual
+  falla si no hay precio activo para una unidad consumida (degradación graceful: se omite el concepto,
+  se loguea `pricing_missing`).
+
+---
+
+## ADR-014: Hardening H1-H5 — controles de resiliencia para el MVP prepago
+**Fecha:** 2026-06-07
+**Estado:** Aprobado
+
+### Contexto
+El flujo prepago (recarga → webhook → crédito Medidor) tiene cinco puntos de falla que pueden
+producir: duplicación de saldo, cargos sin acreditación, acceso cruzado de clientes, o onboarding
+parcial sin rollback. Se requieren controles mínimos antes de la primera recarga real.
+
+### Decisión
+Cinco controles (`H1`-`H5`) implementados en esta sesión:
+
+| Control | Descripción | Archivo |
+|---------|-------------|---------|
+| H1 | Idempotencia onboarding: índice UNIQUE parcial en `clients(request_id)` | `database/006_idempotencia.sql` |
+| H2 | Retry con backoff exponencial en `CoreClient` para 429 y 5xx | `app/core/clients/_base.py` |
+| H3 | Fail-closed en `ENV=production`: falla abierta lanza excepción; dev/staging degrada | `app/services/onboarding.py` |
+| H4 | Tope de recarga `MAX_RECARGA_CENTS` (default 50 M centavos = $500,000 MXN) | `app/core/config.py` |
+| H5 | Webhook de pago valida `client_id` del JWT — no puede acreditar saldo ajeno | `app/routers/webhooks_router.py` |
+
+### Alternativas consideradas
+- **H1 alternativa — lock optimista con `version`:** más flexible para actualizaciones parciales,
+  pero innecesario para onboarding que es un INSERT único.
+- **H3 alternativa — mismo fail-closed en todos los ambientes:** descartado; en dev bloquearía la
+  iteración sin que el developer tenga todos los cores corriendo localmente.
+
+### Consecuencias
+- ✅ Un webhook duplicado o un reintento de recarga no duplica saldo.
+- ✅ Un onboarding parcial (fallo en step N) puede reintentarse con el mismo `request_id` sin
+  crear un cliente duplicado.
+- ✅ Un cliente no puede abusar del endpoint de pago para acreditar saldo de otro cliente.
+- ⚠️ `MAX_RECARGA_CENTS` es un tope duro configurable; si un cliente legítimamente necesita más,
+  el operador debe ajustar la variable de entorno o mover el tope.
+
+---
+
 ## Pendientes de ADR (placeholder)
 
-- **ADR-012: Selección concreta de PAC** — diferida hasta sprint 4. Decisión
-  entre Facturama, Solución Factible, Edicom. Variables a comparar: precio
-  por timbre, SLA, soporte en español, calidad de la API.
-- **ADR-013: Backups y RPO/RTO del CAF** — `[TODO: completar]`. Necesita
+- **ADR-015: Backups y RPO/RTO del CAF** — `[TODO: completar]`. Necesita
   decisión sobre destino (S3 / Backblaze / OneDrive corporativo) y
   frecuencia.
-- **ADR-014: 2FA para super-admin** — mencionado en CLAUDE.md y SECURITY.md
+- **ADR-016: 2FA para super-admin** — mencionado en CLAUDE.md y SECURITY.md
   como requisito; tecnología concreta (TOTP / WebAuthn / push) `[TODO:
   completar]`.
