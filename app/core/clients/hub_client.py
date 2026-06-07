@@ -43,18 +43,22 @@ class HubClient:
         description: str,
         metadata: dict[str, Any],
         gateway: str = "conekta",
+        operation: str = "charge_card",
     ) -> dict[str, Any]:
         """POST /hub/v1/charge.
 
         `metadata.purpose` distingue el flujo en el webhook:
           - 'plan_purchase' / 'wallet_recharge' -> acreditar saldo en Medidor
           - 'invoice_payment'                   -> marcar factura pagada
-        `amount` va en centavos (BIGINT). Devuelve datos del intento de cobro.
+        `operation` es requerido por el Hub (charge_card | charge_oxxo |
+        charge_spei | charge_msi). `amount` va en centavos (BIGINT). Devuelve
+        datos del intento de cobro.
         """
         return await self.c.post(
             "/hub/v1/charge",
             json={
                 "gateway": gateway,
+                "operation": operation,
                 "external_user_id": external_user_id,
                 "amount": amount_cents,
                 "currency": "MXN",
