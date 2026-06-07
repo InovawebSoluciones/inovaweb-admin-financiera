@@ -169,6 +169,8 @@ async def initiate_charge(
             amount_cents=amount_cents,
             description=description,
             metadata=metadata,
+            customer_email=client.get("billing_email") or "facturacion@inovaweb.com.mx",
+            customer_name=client.get("legal_name") or "Cliente Inovaweb",
             gateway=get_settings().HUB_GATEWAY,
         )
     finally:
