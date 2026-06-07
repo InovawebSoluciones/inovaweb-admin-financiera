@@ -7,6 +7,29 @@ Orden cronológico inverso: lo más reciente primero.
 
 ---
 
+## [Sin versión] — 2026-06-06 — Auditoría global + documentación
+
+> Sesión de auditoría global de la plataforma (6 proyectos). No modifica código.
+
+### Agregado
+- `docs/ARQUITECTURA-GLOBAL.md` — referencia de toda la plataforma: mapa de
+  llamadas verificado, mapa de identidad, flujos end-to-end y discrepancias
+  diseño↔implementación.
+- `docs/OWASP.md` — auditoría OWASP del CAF (PASS con observaciones).
+- `docs/GUIA-DESARROLLADOR.md`, `docs/GUIA-USUARIO-OPERADOR.md`,
+  `docs/GUIA-USUARIO-CLIENTE.md`, `docs/RESUMEN-EJECUTIVO.md`.
+
+### Hallazgos
+- 🔴 **CRÍTICO (C1):** `app/core/clients/medidor_client.py:78,96` acredita/borra en
+  `/admin/v1/wallets/{id}/...`; el Medidor expone credit en `/v1/wallets/{id}/credit`
+  y no tiene esas rutas `/admin/v1`. Toda recarga/onboarding daría 404. **Bloquea el
+  commit del CAF** hasta corregir y re-verificar QA. No corregido en esta sesión
+  (regla: no modificar código sin autorización). Detalle en `docs/OWASP.md §0`.
+- ⚠️ WhatsApp del Centro de Mensajes responde 501; plantillas `caf-*` sin sembrar;
+  onboarding sin idempotencia por `request_id`; `revoked_tokens` no implementada.
+
+---
+
 ## [0.3.0] — 2026-06-04 — Flujo prepago end-to-end (Hub → wallet) + idempotencia + hardening
 
 > ⚠️ **Nada de esta entrada está commiteado todavía.** Los cambios viven en el

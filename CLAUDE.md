@@ -69,7 +69,7 @@ NIVEL 3 - apps cliente
 - **Jinja2 + HTMX + Tailwind CSS** para UI server-side (sin SPA, sin build Node)
 - **JWT + bcrypt/Argon2** para auth con usuario/password (NO solo API keys)
 - **cryptography** para AES-256-GCM (sellos CFDI, secretos de PAC)
-- **Docker** + Caddy (TLS via stack n8n)
+- **Docker** + Nginx (TLS — reemplazó a Caddy; verificar config real en VPS antes de documentar)
 - **VPS Contabo** 89.116.25.222, puerto host 8006 (los 8000-8005 ocupados)
 
 **Diferencia clave respecto a los 4 cores Nivel 1:** este modulo TIENE UI
@@ -249,12 +249,16 @@ git pull
 docker compose up -d --build
 ```
 
-Caddy (stack n8n) enruta **dos dominios distintos al MISMO backend**:
+Nginx (reemplazó a Caddy) enruta **dos dominios distintos al MISMO backend**:
 - `https://admin.inovaweb.com.mx` -> `admin_financiera:8001` (operador)
 - `https://app.inovaweb.com.mx` -> `admin_financiera:8001` (cliente)
 
 El propio backend distingue por `Host` header y aplica el routing correcto
 (routers admin vs portal).
+
+**OJO:** el `Caddyfile` en la raiz del repo es solo referencia historica.
+La config real del reverse proxy esta en el VPS bajo Nginx. Claude Code debe
+leer la config real del VPS antes de documentar el deploy.
 
 ---
 
@@ -310,7 +314,19 @@ pospuesta hasta demanda real.
 
 ## 12. ESTADO ACTUAL Y PENDIENTES (actualizar al cerrar cada sesion)
 
-**Sesion al: 2026-06-04. Foco: piloto PREPAGO + CRUD clientes + git SSH.**
+**Sesion al: 2026-06-06. Foco: AUDITORIA GLOBAL + documentacion (sin tocar codigo).**
+
+> 🔴 **BLOQUEANTE C1 (auditoria 2026-06-06):** `app/core/clients/medidor_client.py:78,96`
+> acredita/borra wallet en `/admin/v1/wallets/{id}/...`, pero el Medidor expone
+> `credit` en `/v1/wallets/{id}/credit` y NO tiene rutas `/admin/v1` de wallet.
+> Toda recarga/onboarding daria 404. Fix de 1 linea por confirmar; NO commitear el
+> CAF hasta corregir y re-verificar QA del flujo prepago. Ver `docs/OWASP.md §0` y
+> `docs/ARQUITECTURA-GLOBAL.md §7`. Generados en esta sesion: ARQUITECTURA-GLOBAL,
+> OWASP, GUIA-DESARROLLADOR, GUIA-USUARIO-OPERADOR/CLIENTE, RESUMEN-EJECUTIVO.
+> Pendientes/detalle: `auditoria-global-2026-06-06/REPORTE-CAF.md`; resumen de toda
+> la plataforma + commits: `auditoria-global-2026-06-06/00-RESUMEN-GLOBAL.md`.
+
+**Sesion previa al: 2026-06-04. Foco: piloto PREPAGO + CRUD clientes + git SSH.**
 
 Modelo del piloto: cliente elige plan -> paga (Conekta sandbox) -> CAF acredita
 saldo en wallet del Medidor -> consumo IA descuenta -> al agotarse, bloqueo.
@@ -352,9 +368,32 @@ PALABRAS CLAVE:
   duda      = tengo una pregunta antes de continuar
   error     = algo salio mal, ayudame
   pausa     = recuerdame donde quedamos
-  traslada  = actualiza la seccion 12 de este CLAUDE.md + memoria + dame el
-              comando de commit + cierra sesion
+  traslada  = cierre formal de sesion (ver PROTOCOLO abajo)
 
-PROTOCOLO "traslada": (1) actualizar seccion 12 con el estado real;
-(2) actualizar la fecha de la sesion; (3) dar comando de commit/push;
-(4) cerrar sesion sin seguir avanzando.
+PROTOCOLO "traslada" — ejecutar en este orden exacto, sin saltarse pasos:
+  (1) Actualizar seccion 12 con el estado real de la sesion.
+  (2) Actualizar la fecha de la sesion en el encabezado de la seccion 12.
+  (3) Actualizar la memoria persistente del proyecto (project_caf_*.md).
+  (4) Revision de codigo con el skill `engineering:code-review`:
+      - Correctitud funcional (logica de negocio: saga, prepago, webhooks).
+      - Documentacion a nivel de codigo: docstrings, comentarios inline,
+        type hints. Cualquier funcion publica sin docstring es un hallazgo.
+  (5) Ejecutar el skill `inovaweb-documentacion` para regenerar:
+      - Docs tecnicos formales: README, ADR, RUNBOOK, DEPLOY, CHANGELOG.
+      - Auditoria OWASP (seguridad). Bloquea commit si hay hallazgo critico.
+      - Docs para desarrollador: guia de onboarding tecnico, contratos de
+        integracion actualizados, diagramas de flujo en texto.
+      NOTA: este skill menciona HISTORIAL_SESIONES.md — en este proyecto
+      ese rol lo cumple la seccion 12 del CLAUDE.md; usarla como fuente.
+  (6) Generar o actualizar docs de alto nivel y manual de usuario:
+      - `docs/GUIA-USUARIO-OPERADOR.md`: manual para el equipo financiero
+        interno (como dar de alta clientes, forzar cierre, ver audit log).
+        Nivel: usuario de negocio, sin conocimiento tecnico.
+      - `docs/GUIA-USUARIO-CLIENTE.md`: manual para el cliente final
+        (como entrar al portal, recargar, descargar facturas, ver consumo).
+        Nivel: usuario final, lenguaje simple.
+      - `docs/RESUMEN-EJECUTIVO.md`: una pagina para direccion/stakeholders
+        (que hace el CAF, estado actual, metricas clave, proximos pasos).
+        Sin tecnicismos. Maximo 1 pagina.
+  (7) Dar el comando de commit/push listo para copiar.
+  (8) Cerrar sesion. No seguir avanzando en implementacion.

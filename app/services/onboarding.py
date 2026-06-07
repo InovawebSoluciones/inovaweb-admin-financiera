@@ -20,7 +20,8 @@ external_user_id del cliente en cada core compartido (es el mismo string en
 todos: esos cores no asignan un id propio por cliente).
 
 Compensacion de la Saga: si algo falla tras crear la wallet ->
-  - best-effort medidor.delete_wallet(wallet_id) (via _safe)
+  - best-effort medidor.suspend_wallet(wallet_id) (via _safe; el Medidor no
+    expone DELETE de wallet, la compensacion suspende)
   - rollback de la transaccion local
   - registra falla en audit_log ('onboard_failed')
 """
@@ -228,7 +229,7 @@ async def _compensate(
         extra={"client_id": client_id, "wallet_id": wallet_id, "error": error},
     )
     if wallet_id:
-        await _safe(medidor.delete_wallet(wallet_id), "medidor")
+        await _safe(medidor.suspend_wallet(wallet_id), "medidor")
     await medidor.close()
 
 

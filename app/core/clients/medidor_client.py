@@ -1,10 +1,14 @@
 """Cliente al core Nivel 1 'Medidor IA'.
 
-Contrato real (docs/01-admin-financiera-integracion-cores.md §3):
-  - POST   /v1/wallets                          crea wallet del cliente
-  - GET    /v1/wallets/{wallet_id}/balance      saldo actual
-  - GET    /v1/usage?from_ts&to_ts&project_id=  consumo del periodo
-  - POST   /admin/v1/wallets/{wallet_id}/credit acredita saldo (recarga)
+Contrato real (verificado contra medidor_ia 2026-06-06; ver docs/ARQUITECTURA-GLOBAL.md §3):
+  - POST   /v1/wallets                            crea wallet del cliente (scope ADMIN)
+  - GET    /v1/wallets/{wallet_id}/balance        saldo actual
+  - GET    /v1/usage?from_ts&to_ts&project_id=    consumo del periodo
+  - POST   /v1/wallets/{wallet_id}/credit         acredita saldo (scope ADMIN, recarga)
+  - POST   /admin/v1/wallets/{wallet_id}/suspend  suspende wallet (compensacion Saga)
+
+NOTA: el credit vive en /v1/wallets/... (NO /admin/v1), aunque exija scope ADMIN.
+El Medidor NO expone DELETE de wallet; la compensacion usa suspend.
 
 El Medidor es la fuente de verdad de saldo y consumo. El CAF nunca duplica
 esos datos; los pide cuando los necesita. Las llaves del CAF hacia el Medidor
@@ -69,13 +73,13 @@ class MedidorClient:
         reason: str,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """POST /admin/v1/wallets/{wallet_id}/credit. Acredita saldo (recarga).
+        """POST /v1/wallets/{wallet_id}/credit. Acredita saldo (recarga).
 
         `request_id` es UNIQUE en el Medidor (idempotencia): un webhook duplicado
         del Hub no produce doble acreditacion. Patron: caf-recharge-<RCH-id>.
         """
         return await self.c.post(
-            f"/admin/v1/wallets/{wallet_id}/credit",
+            f"/v1/wallets/{wallet_id}/credit",
             json={
                 "amount_cents": amount_cents,
                 "currency": "MXN",
@@ -85,15 +89,20 @@ class MedidorClient:
             },
         )
 
-    async def delete_wallet(self, wallet_id: str) -> None:
+    async def suspend_wallet(
+        self, wallet_id: str, *, reason: str = "onboarding compensation"
+    ) -> None:
         """Compensacion best-effort de la Saga de alta.
 
-        El contrato no documenta un DELETE de wallet; se intenta y se ignora el
-        resultado (la Saga lo invoca via _safe). Confirmar endpoint real con el
-        equipo del Medidor; si no existe, la compensacion marca para limpieza
-        manual en vez de borrar.
+        El Medidor NO expone DELETE de wallet, asi que la compensacion SUSPENDE la
+        wallet recien creada (POST /admin/v1/wallets/{id}/suspend). La Saga la invoca
+        via _safe (ignora errores). Una wallet suspendida y sin saldo es inocua y
+        queda marcada para limpieza/reactivacion manual.
         """
-        await self.c.delete(f"/admin/v1/wallets/{wallet_id}")
+        await self.c.post(
+            f"/admin/v1/wallets/{wallet_id}/suspend",
+            json={"reason": reason},
+        )
 
     async def close(self) -> None:
         await self.c.close()

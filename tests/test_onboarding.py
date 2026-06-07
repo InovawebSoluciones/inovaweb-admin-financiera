@@ -13,8 +13,11 @@ import pytest
 
 
 @pytest.mark.asyncio
-async def test_compensation_deletes_wallet():
-    """Si el provisioning local falla tras crear la wallet, se borra la wallet."""
+async def test_compensation_suspends_wallet():
+    """Si el provisioning local falla tras crear la wallet, se SUSPENDE la wallet.
+
+    El Medidor no expone DELETE de wallet; la compensacion la suspende (best-effort).
+    """
     from app.services import onboarding
 
     med = AsyncMock()
@@ -25,20 +28,20 @@ async def test_compensation_deletes_wallet():
             med, wallet_id="wal-1", client_id=99, error="PG cae",
         )
 
-    med.delete_wallet.assert_awaited_once_with("wal-1")
+    med.suspend_wallet.assert_awaited_once_with("wal-1")
     med.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_compensation_skips_delete_when_no_wallet():
-    """Si la wallet nunca se creo (wallet_id None), no se intenta borrar."""
+async def test_compensation_skips_suspend_when_no_wallet():
+    """Si la wallet nunca se creo (wallet_id None), no se intenta suspender."""
     from app.services import onboarding
 
     med = AsyncMock()
 
     await onboarding._compensate(med, wallet_id=None, client_id=99, error="boom")
 
-    med.delete_wallet.assert_not_called()
+    med.suspend_wallet.assert_not_called()
     med.close.assert_awaited_once()
 
 
@@ -47,7 +50,7 @@ async def test_onboard_client_failure_after_wallet_compensates_and_audits():
     """Path de fallo tras crear la wallet (FIX-2 + FIX-4).
 
     Verifica que cuando el provisioning local falla DESPUES de crear la wallet:
-      - se dispara la compensacion (medidor.delete_wallet llamado),
+      - se dispara la compensacion (medidor.suspend_wallet llamado),
       - la sesion del request hace rollback,
       - el audit 'onboard_failed' se persiste en una sesion INDEPENDIENTE que
         SI hace commit (no se pierde con el rollback de get_db).
@@ -78,7 +81,7 @@ async def test_onboard_client_failure_after_wallet_compensates_and_audits():
     db = AsyncMock()
     db.execute.side_effect = fake_execute
 
-    # --- cliente Medidor (mock): create_wallet OK, delete_wallet espiable ---
+    # --- cliente Medidor (mock): create_wallet OK, suspend_wallet espiable ---
     med = AsyncMock()
     med.create_wallet.return_value = {"id": "wal-42"}
 
@@ -113,8 +116,8 @@ async def test_onboard_client_failure_after_wallet_compensates_and_audits():
                 actor_user_id=7, actor_ip="1.2.3.4", request_id="req-1",
             )
 
-    # compensacion: la wallet creada se borra
-    med.delete_wallet.assert_awaited_once_with("wal-42")
+    # compensacion: la wallet creada se suspende
+    med.suspend_wallet.assert_awaited_once_with("wal-42")
     # rollback de la sesion del request
     db.rollback.assert_awaited()
     # el audit de fallo se escribio en la sesion INDEPENDIENTE y se confirmo
