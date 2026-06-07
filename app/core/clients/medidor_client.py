@@ -41,13 +41,18 @@ class MedidorClient:
     async def create_wallet(
         self, *, external_user_id: str, metadata: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        """POST /v1/wallets -> {id, ...}. Devuelve el wallet creado."""
+        """POST /v1/wallets -> {id, ...}. Devuelve el wallet creado.
+
+        El Medidor (`CreateWalletIn`, `extra="forbid"`) SOLO acepta
+        `external_user_id` y `currency`; NO `metadata`. El parametro `metadata`
+        se conserva por compatibilidad de firma pero NO se envia (enviarlo da
+        422 extra_forbidden).
+        """
         return await self.c.post(
             "/v1/wallets",
             json={
                 "external_user_id": external_user_id,
                 "currency": "MXN",
-                "metadata": metadata or {},
             },
         )
 
