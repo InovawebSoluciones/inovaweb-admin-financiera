@@ -48,13 +48,18 @@ class MedidorClient:
         se conserva por compatibilidad de firma pero NO se envia (enviarlo da
         422 extra_forbidden).
         """
-        return await self.c.post(
+        resp = await self.c.post(
             "/v1/wallets",
             json={
                 "external_user_id": external_user_id,
                 "currency": "MXN",
             },
         )
+        # El Medidor responde con `BalanceOut` (clave `wallet_id`); normalizamos a
+        # `id` para los callers (onboarding lee wallet["id"]).
+        if isinstance(resp, dict) and "id" not in resp and resp.get("wallet_id"):
+            resp = {**resp, "id": resp["wallet_id"]}
+        return resp
 
     async def get_balance(self, wallet_id: str) -> dict[str, Any]:
         """GET /v1/wallets/{wallet_id}/balance."""
@@ -132,6 +137,10 @@ class MedidorClient:
 
         `request_id` es UNIQUE en el Medidor (idempotencia): un webhook duplicado
         del Hub no produce doble acreditacion. Patron: caf-recharge-<RCH-id>.
+
+        `CreditIn` del Medidor es `extra="forbid"`: solo amount_cents, currency,
+        request_id, reason. NO metadata (el parametro se conserva por firma pero
+        no se envia). `currency` debe matchear la moneda del wallet (MXN).
         """
         return await self.c.post(
             f"/v1/wallets/{wallet_id}/credit",
@@ -140,7 +149,6 @@ class MedidorClient:
                 "currency": "MXN",
                 "request_id": request_id,
                 "reason": reason,
-                "metadata": metadata or {},
             },
         )
 
