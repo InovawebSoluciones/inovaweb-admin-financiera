@@ -169,6 +169,7 @@ async def initiate_charge(
             amount_cents=amount_cents,
             description=description,
             metadata=metadata,
+            gateway=get_settings().HUB_GATEWAY,
         )
     finally:
         if own_hub:
@@ -178,7 +179,8 @@ async def initiate_charge(
     # mismo que volvera en el webhook (payment_id / transaction_id), por lo que
     # request_id/source_ref quedan ligados al intento desde el inicio.
     recharge_id = (
-        intent.get("transaction_id")
+        intent.get("hub_transaction_id")
+        or intent.get("transaction_id")
         or intent.get("payment_id")
         or intent.get("id")
     )

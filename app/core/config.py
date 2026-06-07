@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     MESSAGES_API_KEY: SecretStr = Field(...)
     FINANZAS_BASE_URL: str = "https://finanzas.inovaweb.com.mx"
     FINANZAS_API_KEY: SecretStr = Field(...)
+    # Pasarela por defecto que el CAF pide al Hub en recargas. Pruebas='mock'
+    # (sandbox interno del Hub, pago simulado sin tarjeta); prod='conekta' u otra
+    # real configurada en el Hub para la company.
+    HUB_GATEWAY: str = "mock"
 
     # --- apps Nivel 3 (orquestacion desde el CAF) ---
     # Scraping Universidades: el CAF liga wallet + cliente en el alta (#16).
