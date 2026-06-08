@@ -17,8 +17,8 @@
         <td class="px-3 py-2">{{ r.status }}</td>
         <td class="px-3 py-2">
           {% if r.status in ['stamped','paid'] %}
-            <a class="text-blue-600 mr-2" href="/portal/invoices/{{ r.id }}.pdf">PDF</a>
-            <a class="text-blue-600" href="/portal/invoices/{{ r.id }}.xml">XML</a>
+            <a class="text-[#4F46E5] mr-2" href="/portal/invoices/{{ r.id }}.pdf">PDF</a>
+            <a class="text-[#4F46E5]" href="/portal/invoices/{{ r.id }}.xml">XML</a>
           {% else %}-{% endif %}
         </td>
       </tr>
