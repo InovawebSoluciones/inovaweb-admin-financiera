@@ -14,6 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import bind_actor, write_event
 from app.core.database import get_db
 from app.core.jwt_auth import CurrentUser, require_roles
+from app.core.clients.medidor_client import MedidorClient
+from app.core.clients.finanzas_client import FinanzasClient
 from app.services.onboarding import OnboardClientPayload, OnboardingError, onboard_client
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -181,9 +183,37 @@ async def client_detail(
         FROM subscriptions s JOIN plans p ON p.id = s.plan_id
         WHERE s.client_id = :id ORDER BY s.started_at DESC
     """), {"id": cid})).mappings().all()
+    # Saldo real (Medidor) + consumos reales (Finanzas: IA + mensajería).
+    saldo_cents = None
+    consumos: list[dict] = []
+    if c.get("medidor_account_id"):
+        med = MedidorClient()
+        try:
+            bal = await med.get_balance(str(c["medidor_account_id"]))
+            saldo_cents = bal.get("balance_cents")
+        except Exception:  # noqa: BLE001
+            saldo_cents = None
+        finally:
+            await med.close()
+    fin = FinanzasClient()
+    try:
+        resp = await fin.list_entries(direction="debit", limit=200)
+        for e in (resp.get("items") or []):
+            if e.get("source_slug") not in ("medidor", "messages"):
+                continue
+            if str((e.get("meta") or {}).get("caf_client_id")) != str(cid):
+                continue
+            consumos.append(e)
+    except Exception:  # noqa: BLE001
+        consumos = []
+    finally:
+        await fin.close()
+    total_consumo = sum(int(e.get("amount_cents") or 0) for e in consumos)
     return templates.TemplateResponse(
         request, "admin/client_detail.html",
-        {"user": user, "c": dict(c), "subs": list(subs)},
+        {"user": user, "c": dict(c), "subs": list(subs),
+         "saldo_cents": saldo_cents, "consumos": consumos,
+         "total_consumo": total_consumo},
     )
 
 

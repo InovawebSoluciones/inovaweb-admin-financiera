@@ -5,7 +5,7 @@
   <h2 class="text-sm text-slate-500">Listado de facturas emitidas</h2>
   {# Forzar cierre mensual: POST al endpoint real (devuelve JSON). HTMX muestra
      el resultado en #closing-result sin recargar la pagina. #}
-  <button class="bg-slate-900 text-white text-sm px-4 py-2 rounded"
+  <button class="bg-[#0B1020] text-white text-sm px-4 py-2 rounded"
           hx-post="/admin/billing/run-closing"
           hx-target="#closing-result"
           hx-swap="innerHTML"
@@ -31,15 +31,15 @@
         <td class="px-3 py-2 text-right">${{ '%.2f'|format(r.total_cents/100) }}</td>
         <td class="px-3 py-2"><span class="text-xs px-2 py-0.5 rounded
           {% if r.status=='paid' %}bg-green-100 text-green-700
-          {% elif r.status=='stamped' %}bg-blue-100 text-blue-700
+          {% elif r.status=='stamped' %}bg-[#EEF2FF] text-[#4338CA]
           {% elif r.status=='failed' %}bg-red-100 text-red-700
           {% else %}bg-slate-200 text-slate-700{% endif %}">{{ r.status }}</span></td>
         <td class="px-3 py-2 font-mono text-xs">{{ r.uuid_cfdi or '-' }}</td>
         <td class="px-3 py-2 text-xs">{{ r.created_at.strftime('%Y-%m-%d') }}</td>
         <td class="px-3 py-2 text-xs">
           {% if r.status in ['stamped','paid'] %}
-            <a class="text-blue-600 mr-2" href="/admin/billing/invoices/{{ r.id }}.pdf">PDF</a>
-            <a class="text-blue-600" href="/admin/billing/invoices/{{ r.id }}.xml">XML</a>
+            <a class="text-[#4F46E5] mr-2" href="/admin/billing/invoices/{{ r.id }}.pdf">PDF</a>
+            <a class="text-[#4F46E5]" href="/admin/billing/invoices/{{ r.id }}.xml">XML</a>
           {% else %}
             <span class="text-slate-400">no disponible</span>
           {% endif %}

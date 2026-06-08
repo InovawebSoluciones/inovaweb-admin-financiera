@@ -1,20 +1,20 @@
 {% extends "base.html" %}
 {% block layout %}
 <div class="min-h-screen flex">
-  <aside class="w-56 bg-slate-900 text-slate-100 p-4 hidden md:block">
-    <div class="text-lg font-bold mb-6">Inovaweb CAF</div>
+  <aside class="w-56 bg-[#0B1020] text-slate-100 p-4 hidden md:block">
+    <div class="text-lg font-bold mb-6">LiaForge</div>
     <nav class="space-y-1 text-sm">
-      <a class="block px-2 py-1.5 rounded hover:bg-slate-800" href="/admin/dashboard">Dashboard</a>
-      <a class="block px-2 py-1.5 rounded hover:bg-slate-800" href="/admin/clients">Clientes</a>
+      <a class="block px-2 py-1.5 rounded hover:bg-[#1A2236]" href="/admin/dashboard">Dashboard</a>
+      <a class="block px-2 py-1.5 rounded hover:bg-[#1A2236]" href="/admin/clients">Clientes</a>
       <div class="text-xs uppercase text-slate-400 mt-4 px-2">Catalogo</div>
-      <a class="block px-2 py-1.5 rounded hover:bg-slate-800" href="/admin/catalog/products">Productos</a>
-      <a class="block px-2 py-1.5 rounded hover:bg-slate-800" href="/admin/catalog/services">Servicios</a>
-      <a class="block px-2 py-1.5 rounded hover:bg-slate-800" href="/admin/catalog/plans">Planes</a>
-      <a class="block px-2 py-1.5 rounded hover:bg-slate-800" href="/admin/catalog/promotions">Promociones</a>
+      <a class="block px-2 py-1.5 rounded hover:bg-[#1A2236]" href="/admin/catalog/products">Productos</a>
+      <a class="block px-2 py-1.5 rounded hover:bg-[#1A2236]" href="/admin/catalog/services">Servicios</a>
+      <a class="block px-2 py-1.5 rounded hover:bg-[#1A2236]" href="/admin/catalog/plans">Planes</a>
+      <a class="block px-2 py-1.5 rounded hover:bg-[#1A2236]" href="/admin/catalog/promotions">Promociones</a>
       <div class="text-xs uppercase text-slate-400 mt-4 px-2">Facturacion</div>
-      <a class="block px-2 py-1.5 rounded hover:bg-slate-800" href="/admin/billing/invoices">Facturas</a>
+      <a class="block px-2 py-1.5 rounded hover:bg-[#1A2236]" href="/admin/billing/invoices">Facturas</a>
       <div class="text-xs uppercase text-slate-400 mt-4 px-2">Sistema</div>
-      <a class="block px-2 py-1.5 rounded hover:bg-slate-800" href="/admin/audit-log">Audit log</a>
+      <a class="block px-2 py-1.5 rounded hover:bg-[#1A2236]" href="/admin/audit-log">Audit log</a>
     </nav>
   </aside>
   <main class="flex-1">
@@ -22,7 +22,7 @@
       <div class="text-sm text-slate-500">{% block heading %}{% endblock %}</div>
       <form method="post" action="/logout" class="text-sm">
         <span class="mr-3 text-slate-600">{{ user.id }}</span>
-        <button class="text-blue-600 hover:underline" type="submit">Salir</button>
+        <button class="text-[#4F46E5] hover:underline" type="submit">Salir</button>
       </form>
     </header>
     <div class="p-6">{% block content %}{% endblock %}</div>
