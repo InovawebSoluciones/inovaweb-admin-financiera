@@ -316,6 +316,15 @@ pospuesta hasta demanda real.
 
 **Sesion al: 2026-06-08. Foco: cores cableados + flujo de pago E2E EN PROD + Scraping corregido.**
 
+> **ACTUALIZACION 2026-06-08 (sesion LiaForge) — leer esto primero:**
+> - **P2 (consumo E2E) HECHO y EN PROD:** IA Perplexity via proxy nuevo del Medidor (/llm/perplexity, mide+debita wallet client-5; PROXY_DEFAULT_WALLETS factura al cliente) + email via endpoint nuevo Centro POST /v1/messages/record (Scraping send_email lo reporta) -> sync CAF->Finanzas (source=medidor/messages) por cron */5. Verificado: $500 -> $497.69. Key DeepSeek corregida.
+> - **Rebrand LiaForge:** paleta indigo/ambar + logo + Space Grotesk en la app de Scraping y en el front del CAF (admin+portal). Landing publica https://liaforge.inovaweb.com.mx (+ /producto /precios /casos /contacto /registro), HTTPS. CTAs -> /registro y WhatsApp +522226184898 / ventas@inovaweb.com.mx.
+> - **Estimador de campana** (costo/creditos/costo-por-lead) en la Bandeja de Scraping.
+> - **TODO pusheado a GitHub** (medidor_ia da08b0c, centro 71631ad, CAF 147042f, scraping 10da5a5). Respaldos en VPS /root/liaforge_prompts_backup_20260608/.
+> - **NUEVA TAREA PRIORITARIA:** agregar un **CONTADOR/medicion COBRABLE por proceso** -> (a) scraping de sitios, (b) envio de email, (c) descubrimiento IA, (d) validacion de pagina web. Pipeline: medir en Medidor -> tarificar en CAF (price_catalog: nuevos meter/unit_code) -> asentar en Finanzas (igual que IA y mensajeria ya operativas).
+> - **PENDIENTE de usuario:** correo remitente de validacion de cuenta (para cablear el alta real de /registro y /contacto).
+
+
 > ⚠️ **CORRECCION DE DESFASE:** una version previa de esta §12 ("v3 — traslada formal")
 > decia que commit/push/deploy estaban "PENDIENTE USUARIO" y que se corrio el `traslada`
 > (`inovaweb-documentacion`). **ESO ERA FALSO.** Realidad verificada en prod (2026-06-08):
@@ -364,7 +373,7 @@ confiar en ellos**; regenerar con el skill `inovaweb-documentacion` en el cierre
 | # | Pendiente | Owner |
 |---|---|---|
 | P1 | Endpoint `POST /v1/messages/record` en Centro + nodo n8n (registrar envios email/whatsapp/sms; destinatario+sent_at+client_id; tenant via key; idempotente source_ref) | diferido por usuario |
-| P2 | **Smoke real del CONSUMO:** IA real (Scraping authorize/finish) + mensajes -> CAF tarifica -> debito Finanzas -> saldo baja -> cuadre | pendiente |
+| P2 | **CONSUMO E2E — HECHO Y EN PROD (2026-06-08):** IA (Scraping->proxy Medidor /llm/perplexity->debita wallet client-5) + email (send_email->Centro /v1/messages/record) -> sync cron */5 debita wallet + asiento Finanzas (source=medidor/messages). Verificado $500->$497.69. | OK HECHO |
 | P3 | Proveedor de email en Centro (`tenant_channel_credentials` VACIO) -> Resend o SMTP M365 | usuario (credencial) |
 | P4 | Push del Hub a GitHub (hoy solo en VPS) | pendiente |
 | P5 | Deploy key de `scraping-inovaweb` en el VPS (para habilitar `git pull` de Scraping; hoy solo scp) | usuario (GitHub) |
