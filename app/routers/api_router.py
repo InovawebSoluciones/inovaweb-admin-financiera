@@ -181,3 +181,48 @@ async def api_run_closing(
         "detail": "cierre mensual no aplica en el modelo prepago del piloto; "
                   "se habilita en Fase 4 (postpago + CFDI)",
     }
+
+
+# ---------------------------------------------------------------------
+# plan-limits (solo lectura) — lo consume Scraping (Nivel 3) para el
+# medidor de 'uso vs tope' del plan. NO toca cobro: lee subscriptions ->
+# plan_items -> services. Auth: llave compartida Scraping<->CAF
+# (SCRAPING_ADMIN_KEY, la misma que el CAF usa para llamar a Scraping).
+# ---------------------------------------------------------------------
+class PlanLimitsResponse(BaseModel):
+    client_id: int
+    plan_code: str | None = None
+    plan_name: str | None = None
+    limits: dict[str, int] = {}
+
+
+@router.get('/clients/{client_id}/plan-limits', response_model=PlanLimitsResponse)
+async def api_client_plan_limits(
+    client_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> PlanLimitsResponse:
+    from app.core.config import get_settings
+    auth = request.headers.get('authorization')
+    expected = f'Bearer {get_settings().SCRAPING_ADMIN_KEY.get_secret_value()}'
+    if not auth or auth != expected:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, 'invalid scraping key')
+    rows = (await db.execute(text('''
+        SELECT p.code AS plan_code, p.name AS plan_name,
+               s.code AS servicio, pi.hard_limit_units
+        FROM subscriptions sub
+        JOIN plans p ON p.id = sub.plan_id
+        JOIN plan_items pi ON pi.plan_id = sub.plan_id
+        JOIN services s ON s.id = pi.service_id
+        WHERE sub.client_id = :cid AND sub.status = 'active'
+        ORDER BY s.id
+    '''), {'cid': client_id})).mappings().all()
+    if not rows:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, 'cliente sin suscripcion activa')
+    limits = {r['servicio']: int(r['hard_limit_units']) for r in rows}
+    return PlanLimitsResponse(
+        client_id=client_id,
+        plan_code=rows[0]['plan_code'],
+        plan_name=rows[0]['plan_name'],
+        limits=limits,
+    )
