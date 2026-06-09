@@ -184,16 +184,17 @@ async def api_run_closing(
 
 
 # ---------------------------------------------------------------------
-# plan-limits (solo lectura) — lo consume Scraping (Nivel 3) para el
-# medidor de 'uso vs tope' del plan. NO toca cobro: lee subscriptions ->
-# plan_items -> services. Auth: llave compartida Scraping<->CAF
-# (SCRAPING_ADMIN_KEY, la misma que el CAF usa para llamar a Scraping).
+# plan-limits + precios (solo lectura) — lo consume Scraping (Nivel 3)
+# para el medidor de 'uso vs tope' y para mostrar precios DINÁMICOS del
+# catálogo (services.unit_price_cents). NO toca cobro. Auth: llave
+# compartida Scraping<->CAF (SCRAPING_ADMIN_KEY).
 # ---------------------------------------------------------------------
 class PlanLimitsResponse(BaseModel):
     client_id: int
     plan_code: str | None = None
     plan_name: str | None = None
     limits: dict[str, int] = {}
+    prices: dict[str, int] = {}
 
 
 @router.get('/clients/{client_id}/plan-limits', response_model=PlanLimitsResponse)
@@ -209,7 +210,7 @@ async def api_client_plan_limits(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, 'invalid scraping key')
     rows = (await db.execute(text('''
         SELECT p.code AS plan_code, p.name AS plan_name,
-               s.code AS servicio, pi.hard_limit_units
+               s.code AS servicio, pi.hard_limit_units, s.unit_price_cents
         FROM subscriptions sub
         JOIN plans p ON p.id = sub.plan_id
         JOIN plan_items pi ON pi.plan_id = sub.plan_id
@@ -220,9 +221,11 @@ async def api_client_plan_limits(
     if not rows:
         raise HTTPException(status.HTTP_404_NOT_FOUND, 'cliente sin suscripcion activa')
     limits = {r['servicio']: int(r['hard_limit_units']) for r in rows}
+    prices = {r['servicio']: int(r['unit_price_cents']) for r in rows}
     return PlanLimitsResponse(
         client_id=client_id,
         plan_code=rows[0]['plan_code'],
         plan_name=rows[0]['plan_name'],
         limits=limits,
+        prices=prices,
     )
