@@ -337,3 +337,57 @@ async def api_client_charge(
     await db.commit()
     return ChargeResponse(ok=True, client_id=client_id, service_code=body.service_code,
                           units=body.units, charged_cents=amount, balance_cents=bal - amount)
+
+
+# ---------------------------------------------------------------------
+# B: alta app-facing (Swigg self-service) — Bearer, sin JWT ni datos fiscales.
+# Crea cliente + wallet Medidor + suscripcion + grant inicial del plan al prepaid_ledger.
+# Datos fiscales placeholder (publico en general); se completan al facturar.
+# ---------------------------------------------------------------------
+class AppOnboardBody(BaseModel):
+    trade_name: str
+    billing_email: EmailStr
+    plan_code: str
+    external_ref: str | None = None   # id de la empresa en la app (idempotencia + link)
+
+
+class AppOnboardResponse(BaseModel):
+    client_id: int
+    wallet_id: str
+    plan_code: str
+    granted_cents: int
+
+
+@router.post("/apps/onboard", response_model=AppOnboardResponse, status_code=status.HTTP_201_CREATED)
+async def api_app_onboard(
+    body: AppOnboardBody, request: Request, db: AsyncSession = Depends(get_db),
+) -> AppOnboardResponse:
+    _verify_app_key(request)
+    rid = f"app-{body.external_ref}" if body.external_ref else None
+    payload = OnboardClientPayload(
+        legal_name=body.trade_name, trade_name=body.trade_name,
+        rfc="XAXX010101000", cfdi_use="S01", tax_regime="616",
+        zip_code="00000", billing_email=body.billing_email, contact_phone=None,
+        plan_code=body.plan_code,
+        titular_full_name=body.trade_name, titular_email=body.billing_email,
+    )
+    try:
+        r = await onboard_client(db, payload, actor_user_id=1, actor_ip=None, request_id=rid)
+    except OnboardingError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e)) from e
+
+    grant = (await db.execute(
+        text("SELECT monthly_credit_cents FROM plans WHERE code=:c"),
+        {"c": body.plan_code},
+    )).scalar()
+    granted = int(grant) if grant else 0
+    if granted > 0:
+        await db.execute(
+            text("INSERT INTO prepaid_ledger (client_id, kind, amount_cents, source, idempotency_key, meta) "
+                 "VALUES (:c, 'credit', :a, 'grant_plan', :k, CAST(:m AS jsonb)) "
+                 "ON CONFLICT (client_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING"),
+            {"c": r.client_id, "a": granted, "k": f"grant-{r.client_id}-{body.plan_code}",
+             "m": _json.dumps({"plan": body.plan_code, "external_ref": body.external_ref})},
+        )
+    return AppOnboardResponse(client_id=r.client_id, wallet_id=r.wallet_id,
+                             plan_code=body.plan_code, granted_cents=granted)
