@@ -229,3 +229,107 @@ async def api_client_plan_limits(
         limits=limits,
         prices=prices,
     )
+
+
+# ---------------------------------------------------------------------
+# B: saldo prepago NATIVO del CAF + cargo de consumo (app-facing, Bearer)
+# El saldo vive en el CAF (libro prepaid_ledger). El Medidor NO guarda saldo:
+# solo registra consumo (events/track). Aqui el CAF tarifica, valida saldo y debita.
+# ---------------------------------------------------------------------
+import json as _json
+
+
+def _verify_app_key(request: Request) -> None:
+    from app.core.config import get_settings
+    auth = request.headers.get("authorization")
+    expected = f"Bearer {get_settings().SCRAPING_ADMIN_KEY.get_secret_value()}"
+    if not auth or auth != expected:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid app key")
+
+
+class ChargeBody(BaseModel):
+    service_code: str
+    units: int = 1
+    idempotency_key: str | None = None
+    meta: dict | None = None
+
+
+class ChargeResponse(BaseModel):
+    ok: bool
+    client_id: int
+    service_code: str
+    units: int
+    charged_cents: int
+    balance_cents: int
+    idempotent_replay: bool = False
+
+
+@router.get("/clients/{client_id}/prepaid-balance")
+async def api_client_prepaid_balance(
+    client_id: int, request: Request, db: AsyncSession = Depends(get_db)
+) -> dict:
+    """Saldo prepago del cliente calculado del libro del CAF (NO del Medidor)."""
+    _verify_app_key(request)
+    bal = (await db.execute(
+        text("SELECT balance_cents FROM v_client_balance WHERE client_id=:c"),
+        {"c": client_id},
+    )).scalar()
+    if bal is None:
+        raise HTTPException(404, "cliente no existe")
+    return {"client_id": client_id, "balance_cents": int(bal)}
+
+
+@router.post("/clients/{client_id}/charge", response_model=ChargeResponse)
+async def api_client_charge(
+    client_id: int, body: ChargeBody, request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> ChargeResponse:
+    """Cobra `units` de `service_code` al cliente: tarifica (services.unit_price_cents),
+    valida saldo del CAF y debita en el libro prepaid_ledger. 402 si no alcanza."""
+    _verify_app_key(request)
+    if body.units <= 0:
+        raise HTTPException(422, "units debe ser > 0")
+
+    # idempotencia: cargo ya registrado -> replay
+    if body.idempotency_key:
+        prev = (await db.execute(
+            text("SELECT amount_cents FROM prepaid_ledger "
+                 "WHERE client_id=:c AND idempotency_key=:k"),
+            {"c": client_id, "k": body.idempotency_key},
+        )).first()
+        if prev:
+            bal = int((await db.execute(
+                text("SELECT balance_cents FROM v_client_balance WHERE client_id=:c"),
+                {"c": client_id},
+            )).scalar() or 0)
+            return ChargeResponse(ok=True, client_id=client_id, service_code=body.service_code,
+                                  units=body.units, charged_cents=int(prev[0]),
+                                  balance_cents=bal, idempotent_replay=True)
+
+    svc = (await db.execute(
+        text("SELECT unit_price_cents FROM services WHERE code=:c AND is_active"),
+        {"c": body.service_code},
+    )).first()
+    if not svc:
+        raise HTTPException(404, f"servicio {body.service_code} no existe")
+    amount = int(svc[0]) * body.units
+
+    bal = int((await db.execute(
+        text("SELECT balance_cents FROM v_client_balance WHERE client_id=:c"),
+        {"c": client_id},
+    )).scalar() or 0)
+    if bal < amount:
+        raise HTTPException(
+            status.HTTP_402_PAYMENT_REQUIRED,
+            detail={"error": "saldo_insuficiente", "balance_cents": bal, "required_cents": amount},
+        )
+
+    await db.execute(
+        text("INSERT INTO prepaid_ledger (client_id, kind, amount_cents, service_code, units, source, idempotency_key, meta) "
+             "VALUES (:c, 'debit', :a, :sc, :u, 'consumo', :k, CAST(:m AS jsonb))"),
+        {"c": client_id, "a": amount, "sc": body.service_code, "u": body.units,
+         "k": body.idempotency_key, "m": _json.dumps(body.meta) if body.meta else None},
+    )
+    await db.commit()
+    return ChargeResponse(ok=True, client_id=client_id, service_code=body.service_code,
+                          units=body.units, charged_cents=amount, balance_cents=bal - amount)
