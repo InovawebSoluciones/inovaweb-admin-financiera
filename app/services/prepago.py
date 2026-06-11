@@ -30,6 +30,8 @@ Convenciones firmes:
 
 from __future__ import annotations
 
+import json as _json
+
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
@@ -408,6 +410,18 @@ async def _process_wallet_credit(
         raise PrepagoError(f"falla acreditando saldo en el medidor: {e}") from e
     finally:
         await medidor.close()
+
+    # 1b) acreditar saldo en el CAF (prepaid_ledger) — fuente de verdad del saldo (modelo B).
+    #     El Medidor solo mide; el saldo vive aqui. Idempotente por req_id determinista.
+    await db.execute(
+        text(
+            "INSERT INTO prepaid_ledger (client_id, kind, amount_cents, source, idempotency_key, meta) "
+            "VALUES (:c, 'credit', :a, 'recarga_hub', :k, CAST(:m AS jsonb)) "
+            "ON CONFLICT (client_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING"
+        ),
+        {"c": client_id, "a": amount_cents, "k": req_id,
+         "m": _json.dumps({"hub_transaction_id": hub_txn_id, "purpose": ev["purpose"]})},
+    )
 
     # 2) asiento en Finanzas-Core (idempotente por source_ref determinista)
     finanzas = FinanzasClient()
