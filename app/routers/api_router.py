@@ -241,9 +241,12 @@ import json as _json
 
 def _verify_app_key(request: Request) -> None:
     from app.core.config import get_settings
-    auth = request.headers.get("authorization")
-    expected = f"Bearer {get_settings().SCRAPING_ADMIN_KEY.get_secret_value()}"
-    if not auth or auth != expected:
+    s = get_settings()
+    auth = request.headers.get("authorization") or ""
+    keys = [s.SCRAPING_ADMIN_KEY.get_secret_value()]
+    if getattr(s, "SWIGG_ADMIN_KEY", None) is not None:
+        keys.append(s.SWIGG_ADMIN_KEY.get_secret_value())
+    if not any(auth == f"Bearer {k}" for k in keys):
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid app key")
 
 
@@ -287,6 +290,7 @@ async def api_client_charge(
     """Cobra `units` de `service_code` al cliente: tarifica (services.unit_price_cents),
     valida saldo del CAF y debita en el libro prepaid_ledger. 402 si no alcanza."""
     _verify_app_key(request)
+    await db.execute(text("SELECT pg_advisory_xact_lock(:c)"), {"c": client_id})
     if body.units <= 0:
         raise HTTPException(422, "units debe ser > 0")
 

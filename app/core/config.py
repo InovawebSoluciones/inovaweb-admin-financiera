@@ -58,6 +58,7 @@ class Settings(BaseSettings):
     # Scraping Universidades: el CAF liga wallet + cliente en el alta (#16).
     SCRAPING_BASE_URL: str = "https://scraping.inovaweb.com.mx"
     SCRAPING_ADMIN_KEY: SecretStr = Field(...)
+    SWIGG_ADMIN_KEY: SecretStr | None = None
 
     # --- PAC (CFDI 4.0) ---
     PAC_PROVIDER: Literal["facturama", "factible", "edicom"] = "facturama"
