@@ -616,11 +616,111 @@ Cinco controles (`H1`-`H5`) implementados en esta sesión:
 
 ---
 
+## ADR-015: Saldo prepago NATIVO del CAF (`prepaid_ledger`); el Medidor queda como medidor puro
+
+**Fecha:** 2026-06-11
+**Estado:** Aprobado (supersede parcialmente ADR-011 para el saldo monetario)
+
+### Contexto
+ADR-009/010/011 pusieron el saldo prepago en el **Medidor** (wallet autoritativa con
+`authorize/finish/credit`). Funciona para IA, pero acopla el saldo **monetario** del cliente a un core
+cuya razón de ser es **medir consumo de IA**. Cuando el CAF empieza a cobrar servicios que NO son IA
+(email, scraping, descubrimiento, validación de páginas — ver tarea de "contador cobrable por
+proceso"), tener el saldo en el Medidor obliga a un ida-y-vuelta por cada cobro y mezcla dos conceptos
+distintos: "cuánta IA consumiste" vs. "cuánto dinero te queda".
+
+### Decisión
+El **CAF** mantiene su propio libro prepago nativo: `prepaid_ledger` (append-only) + vista de saldo
+`v_client_balance` (`migrations/030_prepaid_ledger.sql`). El **saldo monetario del cliente vive en el
+CAF**. El Medidor vuelve a ser **medidor puro** (mide IA, lleva holds) y deja de ser la fuente del saldo.
+Durante la transición, la recarga hace **dual-write** (acredita el `prepaid_ledger` del CAF *y* el
+wallet del Medidor, idempotente por `req_id`) hasta retirar el saldo del Medidor.
+
+Regla de negocio canonizada (ver `docs/MODELO-COBRO.md`): **"el Medidor mide, el CAF tarifica y cobra"**.
+
+### Alternativas consideradas
+- **Seguir con la wallet del Medidor como saldo (ADR-011):** descartado. Acopla el saldo monetario a un
+  core de medición; cobrar servicios no-IA requería meter precios y débitos arbitrarios en el Medidor,
+  desvirtuándolo.
+- **Doble contabilidad sin fuente única:** descartado; garantiza divergencia de saldos.
+
+### Consecuencias
+- ✅ El CAF cobra **cualquier** servicio (IA, email, scraping, validación) contra un **saldo único**.
+- ✅ `prepaid_ledger` es append-only con idempotencia (consistente con ADR-003).
+- ⚠️ Dual-write transitorio con el Medidor (idempotente por `req_id`) hasta retirar el saldo del
+  Medidor. La medición de IA del Medidor (ADR-009) **sigue vigente**: este ADR mueve el **saldo**, no la
+  **medición**.
+- ⚠️ ADR-010/011 (saldo en el Medidor) quedan **superseded** en lo que toca al saldo monetario.
+
+---
+
+## ADR-016: Cobro pay-per-use vía `POST /charge` (tarifica + valida + debita + 402), idempotente con advisory lock
+
+**Fecha:** 2026-06-11
+**Estado:** Aprobado
+
+### Contexto
+Las apps consumidoras (LiaForge, Swigg) necesitan cobrar **por operación** (una consulta SEO, un email,
+un descubrimiento) de forma síncrona, a precio de catálogo y a prueba de doble-gasto.
+
+### Decisión
+`POST /api/v2/clients/{id}/charge {service_code, units, idempotency_key, meta}` (app-facing, Bearer):
+tarifica con `services.unit_price_cents`, valida `v_client_balance`, debita `prepaid_ledger` y devuelve
+**402 `saldo_insuficiente`** (`{balance_cents, required_cents}`) si no alcanza. **Idempotente** por
+`(client_id, idempotency_key)` con replay; `pg_advisory_xact_lock(client_id)` serializa los cobros
+concurrentes del mismo cliente.
+
+### Alternativas consideradas
+- **Enforcement por `plan-limits`** (contar en tablas de la app + tope del CAF): es para **límites de
+  plan**, no para cobro monetario. Se mantiene en paralelo (`GET /plan-limits`), no reemplaza al cobro.
+- **Holds del Medidor (`authorize/finish`):** apropiado para IA con costo incierto previo; excesivo para
+  un servicio de datos con precio fijo conocido.
+
+### Consecuencias
+- ✅ Pay-per-use puro: una llamada cobra, con 402 claro para bloquear por saldo.
+- ✅ Doble-gasto imposible (advisory lock + idempotencia).
+- ⚠️ El precio vive en `services` del CAF (no en la app); cambiar precio = update de fila + auditoría.
+
+---
+
+## ADR-017: Onboarding app-facing self-service + modelo multi-app por Bearer (sin discriminador duro)
+
+**Fecha:** 2026-06-11
+**Estado:** Aprobado
+
+### Contexto
+Además del alta por operador (saga ADR-002, con JWT y datos fiscales), las apps necesitan dar de alta
+clientes **self-service** desde su propio registro público, sin JWT ni datos fiscales completos. Y ya
+hay más de una app consumidora (LiaForge/Scraping, Swigg, y futuras como ConductorPlay).
+
+### Decisión
+`POST /api/v2/apps/onboard {trade_name, billing_email, plan_code, external_ref}` autenticado por **Bearer
+de app** (`_verify_app_key`): crea cliente + wallet Medidor + suscripción + grant del plan al
+`prepaid_ledger`; datos fiscales **placeholder** (se completan al facturar). Cada app usa **su propio
+Bearer** (`SCRAPING_ADMIN_KEY` = LiaForge, `SWIGG_ADMIN_KEY` = Swigg). **No** hay discriminador de app por
+fila: los clientes se distinguen por `plan_code` (prefijo por app: `liaforge_*`, `swigg_*`) + `external_ref`.
+
+### Alternativas consideradas
+- **Solo alta por operador:** descartado; no escala para registro self-service.
+- **Columna `app`/`tenant` por cliente con aislamiento duro:** descartado *por ahora*. El reporting por
+  `product` (`GET /reports/income?group_by=product`) ya cubre la segmentación; se reconsiderará si se
+  requiere aislamiento estricto entre apps.
+
+### Consecuencias
+- ✅ Self-service sin JWT ni datos fiscales; un formulario de registro da de alta y deja saldo de plan.
+- ✅ Multi-app con llave por app (separación de credenciales).
+- ⚠️ Sin aislamiento duro entre apps: la separación es por convención (`plan_code` + `external_ref`).
+- ⚠️ Dar de alta una **app nueva** = sembrar sus `plans`/`services` (additive, seguro) + **append** de
+  su llave en `_verify_app_key` (único cambio de código). Caso de uso vivo: alta de **ConductorPlay** como
+  3ª app (planes `cp_*` sin grant por ser BYO-tokens).
+
+---
+
 ## Pendientes de ADR (placeholder)
 
-- **ADR-015: Backups y RPO/RTO del CAF** — `[TODO: completar]`. Necesita
+- **ADR-018: Backups y RPO/RTO del CAF** — `[TODO: completar]`. Necesita
   decisión sobre destino (S3 / Backblaze / OneDrive corporativo) y
   frecuencia.
-- **ADR-016: 2FA para super-admin** — mencionado en CLAUDE.md y SECURITY.md
+- **ADR-019: 2FA para super-admin** — mencionado en CLAUDE.md y SECURITY.md
   como requisito; tecnología concreta (TOTP / WebAuthn / push) `[TODO:
   completar]`.

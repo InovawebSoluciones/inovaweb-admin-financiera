@@ -333,3 +333,43 @@ Imprimir y marcar antes de cada deploy:
 - [ ] Ventana de mantenimiento anunciada (sólo si requiere downtime)
 - [ ] Plan de rollback claro y comunicado
 - [ ] Operador disponible siguientes 30 min para vigilar logs
+
+
+---
+
+## 10. Repo del VPS = fuente de verdad + push a GitHub (alta 2026-06-14)
+
+**Regla:** el repo desplegado en `/opt/inovaweb-admin-financiera` (lo que corre) es la **fuente de
+verdad**. Las copias en OneDrive o en mounts de sesiones de agente son checkouts viejos: **no desplegar
+ni documentar desde ellas** (riesgo de drift).
+
+### 10.1 Push a GitHub (resuelto)
+El remoto venía HTTPS sin credenciales (pendiente histórico). Ya está cableado vía SSH:
+```bash
+# remoto -> alias SSH dedicado (una sola vez, ya hecho)
+git -C /opt/inovaweb-admin-financiera remote get-url origin
+# git@github-caf:InovawebSoluciones/inovaweb-admin-financiera.git
+# alias en ~/.ssh/config:  Host github-caf -> IdentityFile /root/.ssh/id_ed25519
+git -C /opt/inovaweb-admin-financiera push origin main   # funciona directo
+```
+La llave `/root/.ssh/id_ed25519` es la personal (cuenta InovawebSoluciones, acceso a todos los repos).
+Los deploy-keys por-repo del VPS NO sirven para el CAF (no había uno).
+
+### 10.2 Reconciliar drift VPS↔GitHub (si vuelve a divergir)
+```bash
+cd /opt/inovaweb-admin-financiera
+git tag -f backup/pre-reconcile HEAD        # red de seguridad
+git status -s                               # commitear lo del VPS primero (es la verdad)
+git fetch origin
+git rev-list --left-right --count origin/main...HEAD   # left=GitHub-only  right=VPS-only
+git merge -X ours --no-edit origin/main     # el VPS gana en conflictos; conserva commits de docs
+# resolver add/add a favor del VPS: git checkout --ours <f> && git add <f>; git commit --no-edit
+git push origin main
+git rev-list --left-right --count origin/main...HEAD   # debe ser  0   0
+```
+
+### 10.3 Migración del saldo prepago nativo
+La capa saldo-B usa `migrations/030_prepaid_ledger.sql` (`prepaid_ledger` + `v_client_balance`). Aplicar
+con la regla §4 (PowerShell `Get-Content | ssh`, nunca `<`). Sembrar `plans`/`services` de cada app es
+**additive** (ver RUNBOOK §10.3). Backend que toca código: `docker compose up -d --build admin_financiera`.
+

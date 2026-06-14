@@ -6,7 +6,7 @@ Inovaweb que convierte la infraestructura técnica de los 4 cores Nivel 1
 comercial completo: onboarding atómico, catálogos, planes, promociones,
 cobranza con CFDI 4.0, portal cliente, tableros internos.
 
-**Estado (2026-06-07):** flujo de pago E2E verificado en prod (recarga → Hub → webhook HMAC → CAF → Medidor → Finanzas). Onboarding atómico con saga cross-core + activación por email (token SHA-256). Billing por consumo IA + mensajes por canal (`price_catalog`). Hardening H1-H5. Frontend Jinja2+HTMX operativo (admin + portal). Pendiente: DNS/TLS `admin/app.inovaweb.com.mx`, proveedor email en Centro de Mensajes, smoke test real con Scraping. Ver `CLAUDE.md §12` para pendientes detallados.
+**Estado (2026-06-14):** **saldo prepago NATIVO del CAF** (`prepaid_ledger` + `v_client_balance`; el Medidor queda como medidor puro) con **cobro pay-per-use** (`POST /clients/{id}/charge`, 402 si no alcanza) y **onboarding app-facing self-service** (`POST /apps/onboard`, Bearer por app). Apps consumidoras vivas: **LiaForge/Scraping** y **Swigg**, cada una con su Bearer. Sigue vigente: flujo de pago E2E (recarga → Hub → webhook HMAC → CAF → Medidor → Finanzas), onboarding atómico por operador (saga), billing por consumo (`price_catalog`), hardening H1-H5, frontend Jinja2+HTMX. Repo VPS↔GitHub alineados (`af0e078`). Pendiente: DNS/TLS `admin/app.inovaweb.com.mx`, proveedor email en Centro de Mensajes, facturación CFDI (Ecofile, sprint 4). Ver ADR-015/016/017 y `CLAUDE.md §12`.
 
 ---
 
@@ -129,6 +129,8 @@ falla al arrancar (`pydantic-settings` con `Field(...)`).
 | `CER_PATH` | ✅ | `/secrets/csd.cer` | Certificado de Sello Digital |
 | `KEY_PATH` | ✅ | `/secrets/csd.key` | Llave privada del CSD |
 | `KEY_PASSWORD` | ✅ | — | Contraseña del CSD |
+| `SCRAPING_ADMIN_KEY` | ✅ | — | Bearer de la app **LiaForge/Scraping** para los endpoints app-facing (`_verify_app_key`) |
+| `SWIGG_ADMIN_KEY` | — | — | Bearer de la app **Swigg** (2ª app consumidora). Una app nueva = una llave nueva aquí + append en `_verify_app_key` |
 | `HTTP_TIMEOUT_SEC` | — | `10.0` | Timeout default cores+PAC |
 | `HTTP_RETRIES` | — | `3` | — |
 
@@ -243,6 +245,15 @@ puertos `8000-8005` están ocupados por los cores Nivel 1 y n8n.
   el medidor es la fuente de verdad)
 - `GET /api/v2/reports/income` — agregados de ingreso
 - `POST /api/v2/billing/run-closing` — trigger manual de cierre
+
+#### App-facing (autenticados por **Bearer** de app, no JWT — `_verify_app_key`)
+- `POST /api/v2/apps/onboard` — alta self-service (cliente + wallet + plan; sin JWT/fiscales). Ver ADR-017.
+- `POST /api/v2/clients/{id}/charge` — cobro pay-per-use: tarifica `services.unit_price_cents`, debita
+  `prepaid_ledger`, **402 `saldo_insuficiente`** si no alcanza. Idempotente + advisory lock. Ver ADR-016.
+- `GET /api/v2/clients/{id}/prepaid-balance` — saldo prepago **nativo del CAF** (`v_client_balance`).
+- `GET /api/v2/clients/{id}/ledger` — movimientos del `prepaid_ledger` + consumo del mes.
+- `GET /api/v2/clients/{id}/plan-limits` — límites del plan + precios (solo lectura; medición de uso).
+- `GET /api/v2/services` — catálogo de servicios activos con precio unitario.
 
 ### 6.5 Webhooks
 - `POST /webhooks/pac` — timbrado exitoso / fallido (diferido con CFDI)

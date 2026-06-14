@@ -364,10 +364,12 @@ CAF clients.id <-> external_user_id "client-{id}" en cada core.
 - **Hub:** cambios D2 commiteados **SOLO en el repo del VPS**; push a GitHub PENDIENTE.
 - **Centro:** D2 pusheado. **Medidor/Finanzas:** sin cambios de codigo (solo api_keys).
 
-### ⚠️ Docs formales ATRASADOS
-El `traslada` (engineering:code-review + inovaweb-documentacion) **NO se ha corrido** esta
-sesion. README/ADR/RUNBOOK/DEPLOY/CHANGELOG/OWASP reflejan estado PRE-cableado -> **NO
-confiar en ellos**; regenerar con el skill `inovaweb-documentacion` en el cierre formal.
+### ✅ Docs formales AL DIA (traslada 2026-06-14, commit af0e078)
+README/ADR/RUNBOOK/DEPLOY/CHANGELOG/OWASP regenerados con `inovaweb-documentacion`, cubriendo
+la capa **saldo prepago NATIVO** (prepaid_ledger + /charge + /apps/onboard + multi-app Bearer) y la
+reconciliacion VPS<->GitHub. ADR-015/016/017 nuevos. OWASP 2026-06-14 = PASS CON OBSERVACIONES.
+Repo VPS == GitHub (af0e078). NOTA: capa saldo-B (jun 9-11) es posterior a la fecha del encabezado
+de esta §12; el detalle vivo esta en la memoria project_caf_auditoria_global.md.
 
 ### Pendientes (orden)
 | # | Pendiente | Owner |

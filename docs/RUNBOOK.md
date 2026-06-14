@@ -666,3 +666,62 @@ docker exec caf_postgres pg_dump -U caf -d admin_financiera \
 | Sev2: workers detenidos > 2 días | super-admin | mismo día |
 | Sev3: usuario bloqueado | finanzas | mismo día |
 | Sev3: factura mal emitida | finanzas + cliente | siguiente día hábil |
+
+
+---
+
+## 10. Saldo prepago nativo del CAF + apps consumidoras (Bearer)
+
+Desde 2026-06-11 el saldo monetario vive en el CAF (`prepaid_ledger` + `v_client_balance`), no en el
+Medidor (ADR-015). Las apps (LiaForge/Scraping, Swigg) cobran vía Bearer (`SCRAPING_ADMIN_KEY` /
+`SWIGG_ADMIN_KEY`).
+
+### 10.1 Síntoma: una app reporta `402 saldo_insuficiente` al cobrar
+**Diagnóstico** — es el comportamiento esperado de `POST /clients/{id}/charge` cuando
+`v_client_balance < unit_price_cents * units`. Verificar el saldo real:
+```bash
+docker compose exec -T postgres psql -U caf -d admin_financiera \
+  -c "SELECT * FROM v_client_balance WHERE client_id=<ID>;"
+# últimos movimientos
+docker compose exec -T postgres psql -U caf -d admin_financiera \
+  -c "SELECT created_at,kind,service_code,units,amount_cents,source FROM prepaid_ledger WHERE client_id=<ID> ORDER BY created_at DESC LIMIT 20;"
+```
+**Fix** — el cliente debe recargar (flujo Hub-Pasarelas; la recarga acredita el `prepaid_ledger`).
+NO acreditar a mano salvo corrección auditada (append-only: insertar un `credit` con `source` y motivo,
+nunca UPDATE).
+**Verificar** — reintentar el `charge`; debe devolver 200 con `balance_cents` actualizado.
+
+### 10.2 Síntoma: un `charge` se duplicó (doble cobro)
+**Diagnóstico** — no debería ocurrir: el cobro es idempotente por `(client_id, idempotency_key)` y hay
+`pg_advisory_xact_lock(client_id)`. Si se ve doble débito, la app mandó **dos `idempotency_key`
+distintas** para la misma operación. Confirmar:
+```bash
+docker compose exec -T postgres psql -U caf -d admin_financiera \
+  -c "SELECT idempotency_key,count(*) FROM prepaid_ledger WHERE client_id=<ID> AND kind='debit' GROUP BY 1 HAVING count(*)>1;"
+```
+**Fix** — corregir la app para reusar `idempotency_key = projectId+runId+callIndex`. La reversión de un
+cobro erróneo se hace con un `credit` compensatorio auditado, no con DELETE.
+
+### 10.3 Dar de alta una **app consumidora nueva** (ej. ConductorPlay)
+Todo es **additive** salvo un append de código. Orden:
+```bash
+# 1) sembrar servicios y planes de la app (additive; verificar columnas con \d services / \d plans)
+docker compose exec -T postgres psql -U caf -d admin_financiera \
+  -c "INSERT INTO services (code,name,unit,unit_price_cents,is_active) VALUES ('<code>','<n>','<unit>',<cents>,true);"
+docker compose exec -T postgres psql -U caf -d admin_financiera \
+  -c "INSERT INTO plans (code,name,monthly_credit_cents) VALUES ('<app>_<plan>','<n>',<cents_o_0>);"
+# 2) llave Bearer propia de la app: generar y poner en .env del CAF
+openssl rand -hex 32   # -> <APP>_ADMIN_KEY en .env
+# 3) UNICO cambio de codigo: append en app/routers/api_router.py::_verify_app_key
+#    if getattr(s,'<APP>_ADMIN_KEY',None) is not None: keys.append(s.<APP>_ADMIN_KEY.get_secret_value())
+#    + declarar <APP>_ADMIN_KEY en app/core/config.py
+docker compose up -d --build admin_financiera
+```
+**Regla** — NO tocar ni `SCRAPING_ADMIN_KEY` ni `SWIGG_ADMIN_KEY` ni la lógica de cobro: solo
+*agregar*. Verificar que LiaForge/Swigg siguen autenticando con su Bearer de siempre.
+
+### 10.4 Síntoma: el saldo del portal (Medidor) no coincide con `v_client_balance`
+Durante la transición la recarga hace **dual-write** (CAF + Medidor). La **fuente del saldo es el CAF**
+(`v_client_balance`). Si divergen, confiar en el CAF y revisar `prepago.py` (idempotencia por `req_id`).
+Ver también §4.2 (saldo Medidor) que ahora es secundario.
+

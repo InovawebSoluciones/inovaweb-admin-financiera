@@ -1,131 +1,108 @@
 # Auditoría OWASP — inovaweb-admin-financiera (CAF)
 
-**Fecha:** 2026-06-07 (actualización post-Grupo3)
-**Versión:** sesión 2026-06-07 v3 (traslada)
-**Alcance:** revisión de código + base de datos + configuración del CAF (Nivel 2).
-Incluye código nuevo de sesión 2026-06-07: `scraping_client.py`, `onboarding.py` paso 5b,
-`billing.py` secciones 2b+2c, `pricing.py`, migraciones 005-007, hardening H1-H5.
+**Fecha:** 2026-06-14
+**Versión:** commit `af0e078` (rama `main`, VPS == GitHub)
+**Alcance:** revisión de código + base de datos + configuración del CAF (Nivel 2),
+incluyendo la capa **saldo prepago nativo** (sesiones jun 9–11): `migrations/030_prepaid_ledger.sql`,
+endpoints app-facing `POST /clients/{id}/charge`, `GET /prepaid-balance`, `GET /ledger`, `GET /services`,
+`GET /clients/{id}/plan-limits`, `POST /apps/onboard`, autenticación por Bearer (`_verify_app_key`).
 
 **Veredicto global:** **PASS CON OBSERVACIONES** — sin bloqueo de commit.
-El hallazgo C1 (contrato medidor_client) fue **resuelto** en sesión 2026-06-07 y verificado
-con pytest 3/3 PASSED. Los hallazgos restantes son observaciones (⚠️) no bloqueantes.
-
-Hallazgos adicionales del code-review de sesión 2026-06-07 (no OWASP, pero se registran
-por impacto financiero):
-- **CR-1** ⚠️: `billing.py:185,241` — `period_start.isoformat()` genera `"YYYY-MM-DD"` (solo fecha);
-  el Medidor espera ISO-8601 con hora. Puede causar 400 o ventana incorrecta. Fix: añadir `"T00:00:00Z"`.
-- **CR-2** ⚠️: `billing.py:290` — `unit_price = amount_cents // count` (división entera);
-  puede generar `unit_price * count ≠ amount_cents` si no es divisible exacto. Relevante para CFDI.
-
-Estos dos son deuda técnica documentada; no bloquean el commit del MVP (CFDI diferido a sprint 4).
+No se hallaron ❌ FALLO. Las observaciones (⚠️) son deuda técnica documentada heredada (token CSRF
+explícito; `revoked_tokens`); el flujo de cobro nuevo cierra los riesgos de concurrencia y de
+separación de credenciales por app.
 
 ---
 
-## 0. Estado de hallazgos previos
+## Resumen
 
-| ID | Severidad | Descripción | Estado |
-|----|-----------|-------------|--------|
-| **C1** | ✅ RESUELTO | `medidor_client.py` rutas incorrectas de `credit`/`suspend_wallet` | Corregido 2026-06-07; pytest PASSED |
-
----
-
-## 1. SQL Injection — ✅ PASS
-
-- Todas las consultas usan `sqlalchemy.text()` con **bind params** (`:q`, `:cid`, …),
-  sin interpolación de strings. Ej.: `admin_router.py:67-73` (`ILIKE '%'||:q||'%'`,
-  donde `||` es operador SQL y `:q` va parametrizado).
-- No se detectó construcción dinámica de SQL con input del usuario.
-
-## 2. XSS — ✅ PASS (con observación CSP)
-
-- UI con Jinja2 (`Jinja2Templates(directory="app/templates")`), **autoescape activo
-  por defecto** (no se encontró `autoescape=False`).
-- ⚠️ **Observación:** CSP con `script-src 'self' 'unsafe-inline'` (necesario para
-  HTMX) amplía la superficie XSS. Mitigable migrando a hashes/nonces de HTMX.
-
-## 3. CSRF — ⚠️ WARN (mitigado por SameSite, sin token explícito)
-
-- Cookies de sesión con `SameSite=Strict` + `httpOnly` + `Secure` (no dev)
-  (`app/core/jwt_auth.py:52-54`) → protege contra CSRF clásico.
-- ⚠️ SECURITY.md menciona "tokens CSRF para POST mutativos" pero **no están
-  implementados**. Si `SameSite` se relajara, los POST `/admin/*` quedarían
-  expuestos. Recomendado: token CSRF de origen para formularios mutativos.
-
-## 4. Secrets hardcodeados — ✅ PASS
-
-- Ningún secreto en código. Todos en `.env` vía `SecretStr`, con `.get_secret_value()` al usar. `.gitignore` excluye `.env`.
-- Validadores fail-fast: el arranque falla si faltan `DATABASE_URL`, `POSTGRES_PASSWORD`, `AES_KEY`, `JWT_SECRET`, las 4 API keys de cores, `SCRAPING_ADMIN_KEY` (nuevo 2026-06-07), `RFC_EMISOR`, `KEY_PASSWORD`.
-- `scraping_client.py` — nuevo cliente verificado: usa `SCRAPING_ADMIN_KEY` vía `get_secret_value()`. No se loguea el secreto. ✅
-- ⚠️ **Observación:** `HUB_WEBHOOK_SECRET` cae a `HUB_API_KEY` en dev/staging (`config.py`); en prod es obligatorio. Documentar que dev use un secreto dedicado para no mezclar con la API key.
-
-## 5. Gestión de sesiones (JWT/cookies) — ⚠️ WARN
-
-- ✅ Argon2id para passwords (params OWASP 2024: 64 MiB, 3 iter, 4 lanes)
-  (`app/core/password.py:7-25`).
-- ✅ Access token 15 min + refresh 30 días, cookies `httpOnly`/`SameSite=Strict`/`Secure`.
-- ✅ Bloqueo de fuerza bruta: 5 intentos → lock 15 min (`jwt_auth.py:162-164`).
-  Mensajes de error genéricos (sin enumeración de usuarios).
-- ⚠️ **Hallazgo:** tabla `revoked_tokens` referida en SECURITY.md **no existe** en el
-  schema. Logout solo borra cookies del navegador; un JWT robado sigue válido hasta
-  expirar (≤15 min). Mitigación parcial por TTL corto. Recomendado: implementar
-  denylist de refresh tokens (TASK-22).
-
-## 6. Endpoints sin autenticación — ✅ PASS
-
-- Públicos por diseño: `/health`, `/health/db`, `/login` (GET/POST), `/logout`,
-  `/signup-request` (GET/POST). Ninguno revela datos sensibles.
-- Todos los `/admin/*`, `/portal/*`, `/api/v2/*` usan `Depends(require_roles(...))`.
-- Webhooks (`/webhooks/pac`, `/webhooks/hub-payment-paid`) validan firma HMAC +
-  timestamp **antes** de parsear el body (`webhooks_router.py:118-124`).
-
-## 7. Control de acceso / multi-tenant (IDOR) — ✅ PASS
-
-- Portal filtra **siempre** por `user.client_id` (`portal_router.py:31-41` y queries);
-  404 sin diferenciar "no existe" de "no es tuyo".
-- Roles declarados por endpoint (`super_admin`/`finanzas`/`lectura`/`cliente_*`).
-
-## 8. Webhooks (integridad) — ✅ PASS
-
-- HMAC-SHA256 con `hmac.compare_digest` (tiempo constante).
-- Timestamp firmado con ventana anti-replay (`HUB_WEBHOOK_TOLERANCE_SEC`, 300 s);
-  en prod el timestamp es **obligatorio**.
-- Idempotencia a nivel BD: `INSERT ... ON CONFLICT (hub_payment_id) DO NOTHING`
-  (`004_payments_idempotency.sql`) + correlación purpose/amount contra `audit_log`.
-
-## 9. Dinero / integridad financiera — ✅ PASS
-
-- 100% centavos BIGINT en `database/001_initial_schema.sql`. Triggers append-only en
-  `audit_log`, `payments`, `adjustments` y bloqueo de campos financieros en `invoices`
-  (`002_security_constraints.sql`).
-- Parseo defensivo contra floats no enteros en webhooks (`prepago.py` FIX-7).
-- ⚠️ **Observación:** los modelos Pydantic de `/api/v2` no validan explícitamente que
-  el monto sea entero antes de llegar a la capa de servicio; el rechazo ocurre en
-  `prepago.py:159-161`. Recomendado: validar `amount_cents: int` en el schema de entrada.
-
----
-
-## Resumen (2026-06-07)
-
-| Categoría | Veredicto | Notas |
+| Categoría | Estado | Hallazgos |
 |---|---|---|
-| SQL Injection | ✅ PASS | Sin interpolación de input de usuario en SQL |
-| XSS | ✅ PASS | Jinja2 autoescape activo; `hx-swap=innerHTML` solo con respuesta interna |
-| CSRF | ⚠️ WARN | SameSite=Strict mitiga; sin token CSRF explícito |
-| Secrets | ✅ PASS | Sin hardcode; `SCRAPING_ADMIN_KEY` correctamente en `SecretStr` |
-| Sesiones | ⚠️ WARN | Sin `revoked_tokens`; mitigado por TTL 15 min del access token |
-| Endpoints sin auth | ✅ PASS | Todos los endpoints sensibles requieren JWT + rol |
-| Control de acceso / IDOR | ✅ PASS | Portal filtra por `client_id` del JWT |
-| Webhooks | ✅ PASS | HMAC-SHA256 + anti-replay; H5 filtra por client_id |
-| Dinero / append-only | ✅ PASS | BIGINT centavos, triggers append-only |
-| Code review financiero | ⚠️ WARN | CR-1 (timestamp fecha vs datetime), CR-2 (división entera) — deuda sprint 4 |
+| SQL Injection | ✅ PASS | Todo `sqlalchemy.text()` con bind params; barrido sin f-string/concat SQL |
+| XSS | ✅ PASS | Jinja2 autoescape; sin `\|safe`/`innerHTML` con datos de usuario |
+| CSRF | ⚠️ REVISAR | Cookies `SameSite=Strict` mitigan; sin token CSRF explícito (API app-facing usa Bearer, exenta) |
+| Secrets hardcodeados | ✅ PASS | Todo en `SecretStr`/`.env`; `.env` gitignored; barrido sin secretos en código |
+| Gestión de sesiones | ⚠️ REVISAR | JWT httpOnly/Strict/Secure + TTL 15 min + lockout; sin `revoked_tokens` (mitigado por TTL) |
+| Endpoints sin auth | ✅ PASS | Públicos acotados; admin/portal por JWT+rol; app-facing por Bearer; webhooks por HMAC |
+| Control de acceso / IDOR | ✅ PASS | Portal filtra por `client_id` del JWT; app-facing por client_id explícito + Bearer |
+| Cobro pay-per-use | ✅ PASS | Idempotente `(client_id, idempotency_key)` + `pg_advisory_xact_lock`; 402 por saldo |
+| Webhooks | ✅ PASS | HMAC-SHA256 `compare_digest` + timestamp firmado anti-replay |
+| Dinero / append-only | ✅ PASS | BIGINT centavos; `prepaid_ledger`/`payments`/`audit_log` append-only |
 
-**Acciones antes del commit (2026-06-07):** ningún bloqueante.
+---
 
-**Deuda técnica documentada (no bloqueante):**
-1. CR-1: `billing.py` — `period_start.isoformat()` → agregar `"T00:00:00Z"` para compatibilidad Medidor.
-2. CR-2: `billing.py:290` — reconsiderar `unit_price // count` para CFDI correcto (sprint 4).
-3. Implementar `revoked_tokens` / denylist de refresh tokens (TASK-22 existente).
-4. Token CSRF explícito en formularios mutativos (sprint 2+).
-5. `HUB_WEBHOOK_SECRET` separado del API key en dev (config).
+## Detalle por categoría
 
-*Auditoría OWASP — auditoría global Inovaweb 2026-06-06.*
+### 1. SQL Injection — ✅ PASS
+- Barrido de todo `app/` por SQL construido con f-string, concatenación o `.format()`: **0 hallazgos**.
+- Las queries de la capa saldo-B (`api_router.py` charge/ledger/services/prepaid-balance) usan
+  `text()` con bind params (`:c`, `:k`, `:l`, `:sc`, `:u`). El `idempotency_key`, `service_code` y
+  `client_id` van parametrizados.
+
+### 2. XSS — ✅ PASS
+- Jinja2 con autoescape por defecto. Barrido de `templates/` por `|safe`/`innerHTML`: **0 hallazgos**.
+- Los endpoints app-facing devuelven JSON (no HTML), sin renderizado de input.
+
+### 3. CSRF — ⚠️ REVISAR (sin cambio respecto a auditoría previa)
+- Cookies de sesión `SameSite=Strict` + `httpOnly` + `Secure` (`jwt_auth.py`).
+- Los endpoints app-facing (`/apps/onboard`, `/charge`, …) se autentican por **Bearer**, no por cookie:
+  **exentos de CSRF** (un sitio tercero no puede adjuntar el Bearer).
+- Deuda: token CSRF explícito para los formularios mutativos `/admin/*` si alguna vez se relaja
+  `SameSite`.
+
+### 4. Secrets hardcodeados — ✅ PASS
+- Barrido por `password=/secret=/api_key=/token=` con literal: **0 hallazgos** fuera de `SecretStr`.
+- Nuevas llaves de app (`SCRAPING_ADMIN_KEY`, `SWIGG_ADMIN_KEY`) son `SecretStr` en `config.py` y se
+  comparan con `get_secret_value()` en `_verify_app_key`; no se loguean. `.env` y `.env.*` en
+  `.gitignore` (solo `.env.example` trackeado).
+
+### 5. Gestión de sesiones — ⚠️ REVISAR
+- ✅ Argon2id; access 15 min + refresh 30 días con rotación; cookies httpOnly/Strict/Secure.
+- ✅ Bloqueo de fuerza bruta (lock tras intentos fallidos → `423 LOCKED`); errores genéricos.
+- ⚠️ `revoked_tokens` no implementada: logout no invalida el JWT en servidor (válido ≤15 min por TTL).
+  Deuda técnica heredada (TASK-22). No aplica a la API app-facing (Bearer estático por app, rotable
+  por `.env`).
+
+### 6. Endpoints sin autenticación — ✅ PASS
+- Públicos por diseño: `/health`, `/health/db`, `/login`, `/logout`, `/signup-request`.
+- `/admin/*`, `/portal/*` → JWT + rol. `/api/v2/*` app-facing (charge, prepaid-balance, ledger,
+  services, plan-limits, apps/onboard) → `_verify_app_key` (Bearer; 401 si no coincide).
+- Webhooks → HMAC + timestamp antes de cualquier I/O.
+
+### 7. Control de acceso / IDOR — ✅ PASS
+- Portal filtra siempre por `user.client_id`. Los endpoints app-facing reciben `client_id` explícito y
+  exigen Bearer de app válido; el `client_id` lo controla la app dueña de la llave.
+- ⚠️ Observación de diseño (no vulnerabilidad): `_verify_app_key` no distingue **qué** app es la
+  portadora del Bearer, así que una app con llave válida podría cobrar a un `client_id` de otra app. Hoy
+  hay 2 portadoras de confianza (LiaForge, Swigg). Si crece el número de apps o baja la confianza,
+  considerar atar la llave a un conjunto de `client_id`/`plan_code` permitidos (ver ADR-017, aislamiento
+  duro diferido).
+
+### 8. Cobro pay-per-use / doble-gasto — ✅ PASS
+- `POST /charge` idempotente por `(client_id, idempotency_key)` con replay (no re-debita).
+- `pg_advisory_xact_lock(client_id)` serializa cobros concurrentes del mismo cliente.
+- 402 `saldo_insuficiente` con `{balance_cents, required_cents}` antes de debitar.
+
+### 9. Webhooks — ✅ PASS
+- HMAC-SHA256 con `hmac.compare_digest` (tiempo constante); timestamp firmado con ventana
+  `HUB_WEBHOOK_TOLERANCE_SEC` (300 s); en prod `HUB_WEBHOOK_SECRET` es obligatorio y dedicado
+  (validator fail-fast, no fallback a `HUB_API_KEY`).
+
+### 10. Dinero / integridad financiera — ✅ PASS
+- 100% centavos BIGINT. `prepaid_ledger` append-only (kind credit/debit; correcciones = entrada nueva,
+  nunca UPDATE/DELETE), consistente con los triggers de `002_security_constraints.sql` sobre
+  `payments`/`audit_log`/`invoices`/`adjustments`.
+
+---
+
+## Acciones requeridas antes del siguiente push
+Ninguna (sin ❌).
+
+## Deuda técnica documentada (no bloqueante)
+1. `revoked_tokens` / denylist de refresh tokens (TASK-22) — heredada.
+2. Token CSRF explícito en formularios mutativos `/admin/*` — heredada.
+3. Atar el Bearer de app a `client_id`/`plan_code` permitidos si crece el nº de apps (ADR-017).
+4. Retirar el dual-write del saldo en el Medidor cuando termine la transición (ADR-015).
+5. CR-1/CR-2 de billing (timestamp ISO con hora; división entera de `unit_price`) — diferidas a CFDI/sprint 4.
+
+*Auditoría OWASP — traslada 2026-06-14, commit `af0e078`.*

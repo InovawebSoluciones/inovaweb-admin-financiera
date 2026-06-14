@@ -7,6 +7,68 @@ Orden cronológico inverso: lo más reciente primero.
 
 ---
 
+## [0.6.1] — 2026-06-14 — Reconciliación VPS↔GitHub + push habilitado + documentación formal
+
+> Sin cambios de código de negocio. Higiene de repositorio + documentación (skill `inovaweb-documentacion`).
+
+### Corregido
+- **Drift VPS↔GitHub reconciliado.** El repo del VPS (fuente de verdad = lo que corre) estaba
+  divergente con `origin/main`: el VPS adelante con todo el backend saldo-B (jun 9–11) y GitHub solo
+  con 2 commits de docs viejos + 1 rebrand duplicado (`147042f` ≡ VPS `42c6b06`, mismo trabajo en 2 clones).
+  Reconciliado con `git merge -X ours origin/main` (el VPS gana en conflictos; se conservan los 2 commits
+  de docs). Verificado: endpoints saldo-B intactos, la app importa (51 rutas), `/health` ok, `local == origin`
+  (`af0e078`). Tag de respaldo `backup/pre-reconcile`.
+- **Push a GitHub habilitado** (pendiente histórico "pushear CAF"). El remoto venía HTTPS sin
+  credenciales; resuelto con alias SSH `github-caf` → `/root/.ssh/id_ed25519` (cuenta InovawebSoluciones).
+
+### Agregado
+- `GET /api/v2/clients/{id}/ledger` + `GET /api/v2/services` commiteados (estaban en el working tree
+  del VPS sin commitear; commit `d66442f`).
+
+---
+
+## [0.6.0] — 2026-06-11 — Saldo prepago NATIVO del CAF + cobro pay-per-use + onboarding app-facing
+
+> Sesiones 2026-06-09 a 2026-06-11. El saldo prepago deja de vivir en el Medidor y pasa a ser
+> **nativo del CAF** (`prepaid_ledger` + `v_client_balance`); el Medidor queda como medidor puro (solo mide).
+> Habilita apps consumidoras self-service (LiaForge/Scraping y Swigg) que cobran por consumo vía Bearer.
+> Ver ADR-015/016/017.
+
+### Agregado
+- `migrations/030_prepaid_ledger.sql` — libro prepago nativo del CAF: `prepaid_ledger`
+  (append-only; `kind` credit/debit, `service_code`, `units`, `source`, `idempotency_key` UNIQUE por
+  cliente) + vista de saldo `v_client_balance`. El saldo monetario ya NO se lee del Medidor.
+- `POST /api/v2/clients/{id}/charge` — cobro pay-per-use: tarifica por `services.unit_price_cents`,
+  valida `v_client_balance`, debita `prepaid_ledger`; **402 `saldo_insuficiente`** (`{balance_cents,
+  required_cents}`) si no alcanza. Idempotente por `(client_id, idempotency_key)` con replay;
+  `pg_advisory_xact_lock(client_id)` serializa cobros concurrentes (anti doble-gasto).
+- `GET /api/v2/clients/{id}/prepaid-balance` — saldo prepago nativo del CAF (app-facing, Bearer).
+- `GET /api/v2/clients/{id}/ledger` — movimientos del `prepaid_ledger` + consumo del mes (app-facing).
+- `GET /api/v2/services` — catálogo de servicios activos con precio unitario (app-facing).
+- `GET /api/v2/clients/{id}/plan-limits` — límites del plan + precios del catálogo (solo lectura;
+  lo consume Scraping/LiaForge para medir uso vs. tope SIN cobrar).
+- `POST /api/v2/apps/onboard` — alta app-facing self-service (Bearer, sin JWT ni datos fiscales):
+  crea cliente + wallet Medidor + suscripción + grant inicial del plan al `prepaid_ledger`.
+  Datos fiscales placeholder (se completan al facturar).
+- Catálogo sembrado: `plans` (`liaforge_free/starter/growth/scale`, `swigg_free/starter/pro/enterprise`)
+  y `services` (email 100¢, descubrimiento 35¢, descubrimiento_local 99¢, validacion_email 18¢,
+  validacion_pagina 50¢, validacion_dns 5¢, geocoding 5¢, scraping 10¢, agente_corrida 10¢,
+  guion_ia 500¢, video/envio/vista_video 1000¢).
+
+### Cambiado
+- `app/services/prepago.py` — la recarga acredita el `prepaid_ledger` del CAF (dual-write con el
+  Medidor durante la transición, idempotente por `req_id`). El saldo prepago ya vive en el CAF.
+- `app/core/config.py` — `SWIGG_ADMIN_KEY` (opcional): segunda app consumidora con Bearer dedicado.
+- `app/routers/api_router.py` — `_verify_app_key` acepta `SCRAPING_ADMIN_KEY` (LiaForge) y
+  `SWIGG_ADMIN_KEY`. Los endpoints app-facing se autentican por **Bearer**, no por JWT.
+
+### Seguridad
+- `pg_advisory_xact_lock(client_id)` en `/charge` evita doble-gasto concurrente.
+- Llave dedicada por app (`SWIGG_ADMIN_KEY` separada de `SCRAPING_ADMIN_KEY`): cierra 2 WARN OWASP
+  del flujo de cobro (concurrencia + separación de credenciales por consumidor).
+
+---
+
 ## [0.5.0] — 2026-06-07 — Grupo 3: billing consumo + onboarding completo + hardening + frontend
 
 > Sesión v2 + v3 (2026-06-07). Implementación ejecutada por Claude Code en paralelo (4 tareas).
