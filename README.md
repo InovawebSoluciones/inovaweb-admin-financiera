@@ -308,6 +308,7 @@ docker compose up -d --build
 | Contexto técnico completo | `docs/inovaweb-admin-financiera-proyecto-tecnico.md` |
 | Contrato con cores Nivel 1 | `docs/01-admin-financiera-integracion-cores.md` |
 | Decisiones de arquitectura | `docs/ADR.md` |
+| **Los 4 módulos que administra el CAF** | `docs/modulos/` (medidor, finanzas, centro-mensajes, hub-pasarelas + índice) |
 | Runbook operacional | `docs/RUNBOOK.md` |
 | Guía de deploy | `docs/DEPLOY.md` |
 | Modelo de seguridad | `SECURITY.md` |

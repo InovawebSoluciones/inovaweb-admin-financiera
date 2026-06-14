@@ -314,7 +314,7 @@ pospuesta hasta demanda real.
 
 ## 12. ESTADO ACTUAL Y PENDIENTES (actualizar al cerrar cada sesion)
 
-**Sesion al: 2026-06-08. Foco: cores cableados + flujo de pago E2E EN PROD + Scraping corregido.**
+**Sesion al: 2026-06-14. Foco: saldo-B nativo + traslado de control a CAF + documentacion formal de los 4 modulos (medidor/finanzas/centro-mensajes/hub).**
 
 > **ACTUALIZACION 2026-06-08 (sesion LiaForge) — leer esto primero:**
 > - **P2 (consumo E2E) HECHO y EN PROD:** IA Perplexity via proxy nuevo del Medidor (/llm/perplexity, mide+debita wallet client-5; PROXY_DEFAULT_WALLETS factura al cliente) + email via endpoint nuevo Centro POST /v1/messages/record (Scraping send_email lo reporta) -> sync CAF->Finanzas (source=medidor/messages) por cron */5. Verificado: $500 -> $497.69. Key DeepSeek corregida.
@@ -337,6 +337,7 @@ asienta Finanzas -> consumo IA/mensajes descuenta -> cuadre. Identidad:
 CAF clients.id <-> external_user_id "client-{id}" en cada core.
 
 ### ✅ EN PROD, VERIFICADO (no pendiente)
+- **Saldo prepago NATIVO del CAF (jun 9-11):** prepaid_ledger + v_client_balance; POST /clients/{id}/charge (pay-per-use, 402 saldo_insuficiente, idempotente+advisory lock), /prepaid-balance, /ledger, /services, /clients/{id}/plan-limits; POST /apps/onboard (self-service Bearer por app: LiaForge=SCRAPING_ADMIN_KEY, Swigg=SWIGG_ADMIN_KEY). El Medidor solo mide (ADR-015/016/017). Detalle vivo en memoria project_caf_auditoria_global.md.
 - **Flujo de pago E2E funcionando:** CAF /portal/recharge -> Hub /hub/v1/charge (gateway
   mock async=pending) -> webhook paid -> Hub notifica al CAF (D2, HMAC) -> CAF acredita
   Medidor + asienta Finanzas. Verificado: saldo $500, CAF payments $500, Finanzas
@@ -369,7 +370,7 @@ README/ADR/RUNBOOK/DEPLOY/CHANGELOG/OWASP regenerados con `inovaweb-documentacio
 la capa **saldo prepago NATIVO** (prepaid_ledger + /charge + /apps/onboard + multi-app Bearer) y la
 reconciliacion VPS<->GitHub. ADR-015/016/017 nuevos. OWASP 2026-06-14 = PASS CON OBSERVACIONES.
 Repo VPS == GitHub (af0e078). NOTA: capa saldo-B (jun 9-11) es posterior a la fecha del encabezado
-de esta §12; el detalle vivo esta en la memoria project_caf_auditoria_global.md.
+de esta §12; el detalle vivo esta en la memoria project_caf_auditoria_global.md. Los 4 modulos que administra el CAF estan documentados en docs/modulos/ (medidor, finanzas, centro-mensajes, hub-pasarelas + indice README.md).
 
 ### Pendientes (orden)
 | # | Pendiente | Owner |
