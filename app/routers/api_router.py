@@ -282,6 +282,59 @@ async def api_client_prepaid_balance(
     return {"client_id": client_id, "balance_cents": int(bal)}
 
 
+@router.get("/clients/{client_id}/ledger")
+async def api_client_ledger(
+    client_id: int, request: Request, db: AsyncSession = Depends(get_db),
+    limit: int = 50,
+) -> dict:
+    """Movimientos del libro prepago + consumo del mes en curso (app-facing)."""
+    _verify_app_key(request)
+    limit = max(1, min(int(limit), 200))
+    rows = (await db.execute(
+        text("SELECT created_at, kind, service_code, units, amount_cents, source "
+             "FROM prepaid_ledger WHERE client_id=:c "
+             "ORDER BY created_at DESC LIMIT :l"),
+        {"c": client_id, "l": limit},
+    )).all()
+    consumo_mes = int((await db.execute(
+        text("SELECT coalesce(sum(amount_cents),0) FROM prepaid_ledger "
+             "WHERE client_id=:c AND kind='debit' "
+             "AND created_at >= date_trunc('month', now())"),
+        {"c": client_id},
+    )).scalar() or 0)
+    return {
+        "client_id": client_id,
+        "consumo_mes_cents": consumo_mes,
+        "movimientos": [
+            {
+                "fecha": r[0].isoformat(),
+                "kind": r[1],
+                "service_code": r[2],
+                "units": int(r[3]) if r[3] is not None else None,
+                "amount_cents": int(r[4]),
+                "source": r[5],
+            }
+            for r in rows
+        ],
+    }
+
+
+@router.get("/services")
+async def api_services_catalog(request: Request, db: AsyncSession = Depends(get_db)) -> dict:
+    """Catálogo público de servicios activos con su precio unitario (app-facing)."""
+    _verify_app_key(request)
+    rows = (await db.execute(
+        text("SELECT code, name, unit, unit_price_cents FROM services "
+             "WHERE is_active ORDER BY unit_price_cents"),
+    )).all()
+    return {
+        "services": [
+            {"code": r[0], "name": r[1], "unit": r[2], "unit_price_cents": int(r[3])}
+            for r in rows
+        ]
+    }
+
+
 @router.post("/clients/{client_id}/charge", response_model=ChargeResponse)
 async def api_client_charge(
     client_id: int, body: ChargeBody, request: Request,
