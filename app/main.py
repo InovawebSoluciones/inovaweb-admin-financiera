@@ -21,6 +21,7 @@ from app.routers import (
     api_router,
     auth_router,
     health_router,
+    orgs_router,
     portal_router,
     webhooks_router,
 )
@@ -94,6 +95,7 @@ app.include_router(auth_router.router)
 app.include_router(admin_router.router)
 app.include_router(portal_router.router)
 app.include_router(api_router.router)
+app.include_router(orgs_router.router)
 app.include_router(webhooks_router.router)
 
 

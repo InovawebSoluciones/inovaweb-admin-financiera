@@ -33,9 +33,12 @@ def _encode(payload: dict[str, Any], ttl: timedelta) -> str:
     return jwt.encode(data, _settings.JWT_SECRET.get_secret_value(), algorithm=_ALGO)
 
 
-def issue_access(user_id: int, roles: list[str], client_id: int | None) -> str:
+def issue_access(
+    user_id: int, roles: list[str], client_id: int | None, org_id: int = 1
+) -> str:
     return _encode(
-        {"sub": str(user_id), "roles": roles, "cid": client_id, "typ": "access"},
+        {"sub": str(user_id), "roles": roles, "cid": client_id, "oid": org_id,
+         "typ": "access"},
         timedelta(minutes=_settings.JWT_ACCESS_TTL_MIN),
     )
 
@@ -89,15 +92,24 @@ def decode(token: str) -> dict[str, Any]:
 
 
 class CurrentUser:
-    __slots__ = ("id", "roles", "client_id")
+    __slots__ = ("id", "roles", "client_id", "organization_id")
 
-    def __init__(self, id: int, roles: list[str], client_id: int | None):
+    def __init__(self, id: int, roles: list[str], client_id: int | None,
+                 organization_id: int = 1):
         self.id = id
         self.roles = roles
         self.client_id = client_id
+        self.organization_id = organization_id
 
     def has(self, *roles: str) -> bool:
         return any(r in self.roles for r in roles)
+
+    @property
+    def is_platform(self) -> bool:
+        """True para el operador de la plataforma (super_admin de la org 1 Inovaweb),
+        que ve/administra TODAS las organizaciones. El resto solo ve la suya."""
+        from app.core.tenancy import PLATFORM_ORG_ID
+        return self.organization_id == PLATFORM_ORG_ID and "super_admin" in self.roles
 
 
 async def current_user(request: Request) -> CurrentUser:
@@ -116,6 +128,7 @@ async def current_user(request: Request) -> CurrentUser:
         id=int(payload["sub"]),
         roles=list(payload.get("roles", [])),
         client_id=payload.get("cid"),
+        organization_id=int(payload.get("oid") or 1),
     )
 
 
@@ -143,6 +156,7 @@ async def login_user(
 
     row = await db.execute(text("""
         SELECT u.id, u.password_hash, u.is_active, u.locked_until, u.client_id,
+               u.organization_id,
                COALESCE(array_agg(r.code) FILTER (WHERE r.code IS NOT NULL), '{}') AS roles
         FROM users u
         LEFT JOIN user_roles ur ON ur.user_id = u.id
@@ -171,5 +185,7 @@ async def login_user(
     """), {"id": user["id"]})
 
     roles = list(user["roles"])
-    cu = CurrentUser(id=user["id"], roles=roles, client_id=user["client_id"])
-    return cu, issue_access(cu.id, roles, cu.client_id), issue_refresh(cu.id)
+    org_id = int(user["organization_id"] or 1)
+    cu = CurrentUser(id=user["id"], roles=roles, client_id=user["client_id"],
+                     organization_id=org_id)
+    return cu, issue_access(cu.id, roles, cu.client_id, org_id), issue_refresh(cu.id)

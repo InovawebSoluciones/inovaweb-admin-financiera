@@ -64,6 +64,9 @@ class OnboardClientPayload:
     # TASK-16: id de la Company en Scraping a ligar con este cliente CAF. Si es
     # None no se hace el link (clientes sin app Scraping asociada).
     scraping_company_id: int | None = None
+    # SaaS multi-org: organizacion dueña del cliente (resuelta de la API key).
+    # Default 1 = Inovaweb (altas internas/legacy).
+    organization_id: int = 1
 
 
 @dataclass(slots=True)
@@ -122,10 +125,10 @@ async def onboard_client(
                 wallet_id=existing["wallet_id"] or "",
             )
 
-    # plan existe?
+    # plan existe Y pertenece a la organizacion del alta (aislamiento de catalogo)
     row = await db.execute(
-        text("SELECT id FROM plans WHERE code = :c AND is_active"),
-        {"c": payload.plan_code},
+        text("SELECT id FROM plans WHERE code = :c AND is_active AND organization_id = :org"),
+        {"c": payload.plan_code, "org": payload.organization_id},
     )
     plan = row.first()
     if not plan:
@@ -136,14 +139,14 @@ async def onboard_client(
     row = await db.execute(text("""
         INSERT INTO clients
           (legal_name, trade_name, rfc, cfdi_use, tax_regime, zip_code,
-           billing_email, contact_phone, status, request_id)
-        VALUES (:ln, :tn, :rfc, :cu, :tr, :zp, :be, :cp, 'active', :rid)
+           billing_email, contact_phone, status, request_id, organization_id)
+        VALUES (:ln, :tn, :rfc, :cu, :tr, :zp, :be, :cp, 'active', :rid, :org)
         RETURNING id
     """), {
         "ln": payload.legal_name, "tn": payload.trade_name, "rfc": payload.rfc,
         "cu": payload.cfdi_use, "tr": payload.tax_regime, "zp": payload.zip_code,
         "be": payload.billing_email, "cp": payload.contact_phone,
-        "rid": request_id,
+        "rid": request_id, "org": payload.organization_id,
     })
     client_id = row.scalar_one()
 
@@ -202,19 +205,20 @@ async def onboard_client(
 
         # 4) suscripcion inicial al plan
         await db.execute(text("""
-            INSERT INTO subscriptions (client_id, plan_id, status, started_at)
-            VALUES (:cid, :pid, 'active', CURRENT_DATE)
-        """), {"cid": client_id, "pid": plan_id})
+            INSERT INTO subscriptions (client_id, plan_id, status, started_at, organization_id)
+            VALUES (:cid, :pid, 'active', CURRENT_DATE, :org)
+        """), {"cid": client_id, "pid": plan_id, "org": payload.organization_id})
 
         # 5) user titular con password temporal
         temp_pw = _gen_temp_password()
         pw_hash = hash_password(temp_pw)
         row = await db.execute(text("""
-            INSERT INTO users (email, password_hash, full_name, is_active, is_internal, client_id)
-            VALUES (:e, :h, :n, TRUE, FALSE, :cid)
+            INSERT INTO users (email, password_hash, full_name, is_active, is_internal, client_id, organization_id)
+            VALUES (:e, :h, :n, TRUE, FALSE, :cid, :org)
             RETURNING id
         """), {"e": payload.titular_email, "h": pw_hash,
-                "n": payload.titular_full_name, "cid": client_id})
+                "n": payload.titular_full_name, "cid": client_id,
+                "org": payload.organization_id})
         user_id = row.scalar_one()
 
         await db.execute(text("""

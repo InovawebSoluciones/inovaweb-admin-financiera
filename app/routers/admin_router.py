@@ -27,6 +27,19 @@ _WRITE = require_roles("super_admin", "finanzas")
 _ADMIN = require_roles("super_admin")
 
 
+def _org_scope(user: CurrentUser, column: str = "organization_id") -> tuple[str, dict]:
+    """Cláusula de aislamiento por organización para los listados del panel.
+
+    El operador de la plataforma (super_admin de Inovaweb, org 1) ve TODAS las
+    organizaciones; cualquier otro usuario solo ve la suya. Devuelve el fragmento
+    SQL a concatenar dentro del WHERE y los params. `column` permite calificar
+    con alias (p.ej. 'c.organization_id') en queries con JOIN.
+    """
+    if user.is_platform:
+        return "", {}
+    return f" AND {column} = :_org", {"_org": user.organization_id}
+
+
 # ---------------------------------------------------------------------
 # dashboard
 # ---------------------------------------------------------------------
@@ -44,25 +57,27 @@ async def dashboard(
     mes, mora/suspendidos), las ultimas 10 entradas del audit_log y barras de
     consumo por core (datos placeholder hasta cablear el agregado real del Medidor).
     """
-    metrics = (await db.execute(text("""
+    oc, op = _org_scope(user)
+    metrics = (await db.execute(text(f"""
         SELECT
-          (SELECT count(*) FROM clients WHERE status='active') AS clients_active,
-          (SELECT count(*) FROM clients WHERE status='suspended') AS clients_suspended,
+          (SELECT count(*) FROM clients WHERE status='active'{oc}) AS clients_active,
+          (SELECT count(*) FROM clients WHERE status='suspended'{oc}) AS clients_suspended,
           (SELECT COALESCE(sum(total_cents),0) FROM invoices
              WHERE status IN ('stamped','paid')
-               AND date_trunc('month', created_at) = date_trunc('month', now())) AS mtd_income_cents,
+               AND date_trunc('month', created_at) = date_trunc('month', now()){oc}) AS mtd_income_cents,
           (SELECT count(*) FROM invoices
-             WHERE date_trunc('month', created_at) = date_trunc('month', now())) AS invoices_mtd,
-          (SELECT count(*) FROM invoices WHERE status='pending_stamp') AS pending_stamp
-    """))).mappings().one()
+             WHERE date_trunc('month', created_at) = date_trunc('month', now()){oc}) AS invoices_mtd,
+          (SELECT count(*) FROM invoices WHERE status='pending_stamp'{oc}) AS pending_stamp
+    """), op)).mappings().one()
 
-    # actividad reciente: ultimas 10 escrituras auditadas
-    recent = (await db.execute(text("""
+    # actividad reciente: ultimas 10 escrituras auditadas (aisladas por org via actor)
+    rc = "" if user.is_platform else " WHERE u.organization_id = :_org"
+    recent = (await db.execute(text(f"""
         SELECT a.occurred_at, u.email AS actor_email, a.entity_type,
                a.entity_id, a.action
-        FROM audit_log a LEFT JOIN users u ON u.id = a.actor_user_id
+        FROM audit_log a LEFT JOIN users u ON u.id = a.actor_user_id{rc}
         ORDER BY a.occurred_at DESC LIMIT 10
-    """))).mappings().all()
+    """), op)).mappings().all()
 
     # barras de consumo por core (placeholder; el agregado real vive en el Medidor)
     core_usage = [
@@ -92,14 +107,15 @@ async def list_clients(
     q: str | None = None,
     page_status: str | None = None,
 ) -> HTMLResponse:
-    sql = """
+    oc, op = _org_scope(user)
+    sql = f"""
         SELECT id, legal_name, rfc, status, billing_email, created_at
         FROM clients
         WHERE (:q IS NULL OR legal_name ILIKE '%'||:q||'%' OR rfc ILIKE '%'||:q||'%')
-          AND (:st IS NULL OR status = :st)
+          AND (:st IS NULL OR status = :st){oc}
         ORDER BY created_at DESC LIMIT 200
     """
-    rows = (await db.execute(text(sql), {"q": q, "st": page_status})).mappings().all()
+    rows = (await db.execute(text(sql), {"q": q, "st": page_status, **op})).mappings().all()
     ctx = {"user": user, "clients": list(rows), "q": q, "page_status": page_status}
     # HTMX: devolver solo el fragmento de la tabla (los filtros usan hx-get).
     if request.headers.get("HX-Request"):
@@ -117,8 +133,9 @@ async def new_client_form(
     user: CurrentUser = Depends(_WRITE),
     db: AsyncSession = Depends(get_db),
 ) -> HTMLResponse:
+    oc, op = _org_scope(user)
     plans = (await db.execute(
-        text("SELECT code, name FROM plans WHERE is_active ORDER BY name")
+        text(f"SELECT code, name FROM plans WHERE is_active{oc} ORDER BY name"), op
     )).mappings().all()
     return templates.TemplateResponse(
         request, "admin/client_new.html",
@@ -155,6 +172,7 @@ async def create_client(
                 billing_email=billing_email, contact_phone=contact_phone,
                 plan_code=plan_code,
                 titular_full_name=titular_full_name, titular_email=titular_email,
+                organization_id=user.organization_id,
             ),
             actor_user_id=user.id,
             actor_ip=request.client.host if request.client else None,
@@ -173,8 +191,9 @@ async def client_detail(
     user: CurrentUser = Depends(_OPS),
     db: AsyncSession = Depends(get_db),
 ) -> HTMLResponse:
+    oc, op = _org_scope(user)
     c = (await db.execute(
-        text("SELECT * FROM clients WHERE id=:id"), {"id": cid}
+        text(f"SELECT * FROM clients WHERE id=:id{oc}"), {"id": cid, **op}
     )).mappings().first()
     if not c:
         raise HTTPException(404, "cliente no existe")
@@ -360,9 +379,10 @@ async def list_products(
     user: CurrentUser = Depends(_OPS),
     db: AsyncSession = Depends(get_db),
 ) -> HTMLResponse:
+    oc, op = _org_scope(user)
     rows = (await db.execute(text(
-        "SELECT * FROM products ORDER BY name"
-    ))).mappings().all()
+        f"SELECT * FROM products WHERE TRUE{oc} ORDER BY name"
+    ), op)).mappings().all()
     return templates.TemplateResponse(
         request, "admin/products.html", {"user": user, "rows": list(rows)},
     )
@@ -374,9 +394,10 @@ async def list_services(
     user: CurrentUser = Depends(_OPS),
     db: AsyncSession = Depends(get_db),
 ) -> HTMLResponse:
+    oc, op = _org_scope(user)
     rows = (await db.execute(text(
-        "SELECT * FROM services ORDER BY name"
-    ))).mappings().all()
+        f"SELECT * FROM services WHERE TRUE{oc} ORDER BY name"
+    ), op)).mappings().all()
     return templates.TemplateResponse(
         request, "admin/services.html", {"user": user, "rows": list(rows)},
     )
@@ -388,9 +409,10 @@ async def list_plans(
     user: CurrentUser = Depends(_OPS),
     db: AsyncSession = Depends(get_db),
 ) -> HTMLResponse:
+    oc, op = _org_scope(user)
     rows = (await db.execute(text(
-        "SELECT * FROM plans ORDER BY name"
-    ))).mappings().all()
+        f"SELECT * FROM plans WHERE TRUE{oc} ORDER BY name"
+    ), op)).mappings().all()
     return templates.TemplateResponse(
         request, "admin/plans.html", {"user": user, "rows": list(rows)},
     )
@@ -402,9 +424,10 @@ async def list_promotions(
     user: CurrentUser = Depends(_OPS),
     db: AsyncSession = Depends(get_db),
 ) -> HTMLResponse:
+    oc, op = _org_scope(user)
     rows = (await db.execute(text(
-        "SELECT * FROM promotions ORDER BY valid_from DESC"
-    ))).mappings().all()
+        f"SELECT * FROM promotions WHERE TRUE{oc} ORDER BY valid_from DESC"
+    ), op)).mappings().all()
     return templates.TemplateResponse(
         request, "admin/promotions.html", {"user": user, "rows": list(rows)},
     )
@@ -421,12 +444,14 @@ async def list_invoices(
     user: CurrentUser = Depends(_OPS),
     db: AsyncSession = Depends(get_db),
 ) -> HTMLResponse:
-    rows = (await db.execute(text("""
+    oc, op = _org_scope(user, "i.organization_id")
+    rows = (await db.execute(text(f"""
         SELECT i.id, i.client_id, c.legal_name, i.period_start, i.period_end,
                i.total_cents, i.status, i.uuid_cfdi, i.created_at
         FROM invoices i JOIN clients c ON c.id = i.client_id
+        WHERE TRUE{oc}
         ORDER BY i.created_at DESC LIMIT 200
-    """))).mappings().all()
+    """), op)).mappings().all()
     return templates.TemplateResponse(
         request, "admin/invoices.html", {"user": user, "rows": list(rows)},
     )
@@ -492,14 +517,15 @@ async def audit_log_view(
     entity: str | None = None,
     actor: int | None = None,
 ) -> HTMLResponse:
-    rows = (await db.execute(text("""
+    oc, op = _org_scope(user, "u.organization_id")
+    rows = (await db.execute(text(f"""
         SELECT a.id, a.occurred_at, u.email AS actor_email, a.actor_ip,
                a.entity_type, a.entity_id, a.action, a.request_id
         FROM audit_log a LEFT JOIN users u ON u.id = a.actor_user_id
         WHERE (:e IS NULL OR a.entity_type = :e)
-          AND (:u IS NULL OR a.actor_user_id = :u)
+          AND (:u IS NULL OR a.actor_user_id = :u){oc}
         ORDER BY a.occurred_at DESC LIMIT 500
-    """), {"e": entity, "u": actor})).mappings().all()
+    """), {"e": entity, "u": actor, **op})).mappings().all()
     return templates.TemplateResponse(
         request, "admin/audit_log.html",
         {"user": user, "rows": list(rows), "entity": entity, "actor": actor},

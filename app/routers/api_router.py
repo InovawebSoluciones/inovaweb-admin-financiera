@@ -13,6 +13,7 @@ from app.core.audit import bind_actor
 from app.core.clients.medidor_client import MedidorClient
 from app.core.database import get_db
 from app.core.jwt_auth import CurrentUser, require_roles
+from app.core.tenancy import assert_client_in_org, resolve_app_org
 from app.services.onboarding import OnboardClientPayload, OnboardingError, onboard_client
 
 router = APIRouter(prefix="/api/v2", tags=["api"])
@@ -203,11 +204,8 @@ async def api_client_plan_limits(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> PlanLimitsResponse:
-    from app.core.config import get_settings
-    auth = request.headers.get('authorization')
-    expected = f'Bearer {get_settings().SCRAPING_ADMIN_KEY.get_secret_value()}'
-    if not auth or auth != expected:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, 'invalid scraping key')
+    org = await resolve_app_org(request, db)
+    await assert_client_in_org(db, client_id, org)
     rows = (await db.execute(text('''
         SELECT p.code AS plan_code, p.name AS plan_name,
                s.code AS servicio, pi.hard_limit_units, s.unit_price_cents
@@ -239,17 +237,6 @@ async def api_client_plan_limits(
 import json as _json
 
 
-def _verify_app_key(request: Request) -> None:
-    from app.core.config import get_settings
-    s = get_settings()
-    auth = request.headers.get("authorization") or ""
-    keys = [s.SCRAPING_ADMIN_KEY.get_secret_value()]
-    if getattr(s, "SWIGG_ADMIN_KEY", None) is not None:
-        keys.append(s.SWIGG_ADMIN_KEY.get_secret_value())
-    if not any(auth == f"Bearer {k}" for k in keys):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid app key")
-
-
 class ChargeBody(BaseModel):
     service_code: str
     units: int = 1
@@ -272,7 +259,8 @@ async def api_client_prepaid_balance(
     client_id: int, request: Request, db: AsyncSession = Depends(get_db)
 ) -> dict:
     """Saldo prepago del cliente calculado del libro del CAF (NO del Medidor)."""
-    _verify_app_key(request)
+    org = await resolve_app_org(request, db)
+    await assert_client_in_org(db, client_id, org)
     bal = (await db.execute(
         text("SELECT balance_cents FROM v_client_balance WHERE client_id=:c"),
         {"c": client_id},
@@ -288,7 +276,8 @@ async def api_client_ledger(
     limit: int = 50,
 ) -> dict:
     """Movimientos del libro prepago + consumo del mes en curso (app-facing)."""
-    _verify_app_key(request)
+    org = await resolve_app_org(request, db)
+    await assert_client_in_org(db, client_id, org)
     limit = max(1, min(int(limit), 200))
     rows = (await db.execute(
         text("SELECT created_at, kind, service_code, units, amount_cents, source "
@@ -321,11 +310,12 @@ async def api_client_ledger(
 
 @router.get("/services")
 async def api_services_catalog(request: Request, db: AsyncSession = Depends(get_db)) -> dict:
-    """Catálogo público de servicios activos con su precio unitario (app-facing)."""
-    _verify_app_key(request)
+    """Catálogo de servicios activos de la organización con su precio (app-facing)."""
+    org = await resolve_app_org(request, db)
     rows = (await db.execute(
         text("SELECT code, name, unit, unit_price_cents FROM services "
-             "WHERE is_active ORDER BY unit_price_cents"),
+             "WHERE is_active AND organization_id = :org ORDER BY unit_price_cents"),
+        {"org": org},
     )).all()
     return {
         "services": [
@@ -342,7 +332,8 @@ async def api_client_charge(
 ) -> ChargeResponse:
     """Cobra `units` de `service_code` al cliente: tarifica (services.unit_price_cents),
     valida saldo del CAF y debita en el libro prepaid_ledger. 402 si no alcanza."""
-    _verify_app_key(request)
+    org = await resolve_app_org(request, db)
+    await assert_client_in_org(db, client_id, org)
     await db.execute(text("SELECT pg_advisory_xact_lock(:c)"), {"c": client_id})
     if body.units <= 0:
         raise HTTPException(422, "units debe ser > 0")
@@ -364,8 +355,9 @@ async def api_client_charge(
                                   balance_cents=bal, idempotent_replay=True)
 
     svc = (await db.execute(
-        text("SELECT unit_price_cents FROM services WHERE code=:c AND is_active"),
-        {"c": body.service_code},
+        text("SELECT unit_price_cents FROM services "
+             "WHERE code=:c AND is_active AND organization_id=:org"),
+        {"c": body.service_code, "org": org},
     )).first()
     if not svc:
         raise HTTPException(404, f"servicio {body.service_code} no existe")
@@ -382,9 +374,9 @@ async def api_client_charge(
         )
 
     await db.execute(
-        text("INSERT INTO prepaid_ledger (client_id, kind, amount_cents, service_code, units, source, idempotency_key, meta) "
-             "VALUES (:c, 'debit', :a, :sc, :u, 'consumo', :k, CAST(:m AS jsonb))"),
-        {"c": client_id, "a": amount, "sc": body.service_code, "u": body.units,
+        text("INSERT INTO prepaid_ledger (client_id, organization_id, kind, amount_cents, service_code, units, source, idempotency_key, meta) "
+             "VALUES (:c, :org, 'debit', :a, :sc, :u, 'consumo', :k, CAST(:m AS jsonb))"),
+        {"c": client_id, "org": org, "a": amount, "sc": body.service_code, "u": body.units,
          "k": body.idempotency_key, "m": _json.dumps(body.meta) if body.meta else None},
     )
     await db.commit()
@@ -415,7 +407,7 @@ class AppOnboardResponse(BaseModel):
 async def api_app_onboard(
     body: AppOnboardBody, request: Request, db: AsyncSession = Depends(get_db),
 ) -> AppOnboardResponse:
-    _verify_app_key(request)
+    org = await resolve_app_org(request, db)
     rid = f"app-{body.external_ref}" if body.external_ref else None
     payload = OnboardClientPayload(
         legal_name=body.trade_name, trade_name=body.trade_name,
@@ -423,23 +415,25 @@ async def api_app_onboard(
         zip_code="00000", billing_email=body.billing_email, contact_phone=None,
         plan_code=body.plan_code,
         titular_full_name=body.trade_name, titular_email=body.billing_email,
+        organization_id=org,
     )
     try:
         r = await onboard_client(db, payload, actor_user_id=1, actor_ip=None, request_id=rid)
     except OnboardingError as e:
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e)) from e
 
+    # el plan debe pertenecer a la org de la llave (aislamiento del catalogo)
     grant = (await db.execute(
-        text("SELECT monthly_credit_cents FROM plans WHERE code=:c"),
-        {"c": body.plan_code},
+        text("SELECT monthly_credit_cents FROM plans WHERE code=:c AND organization_id=:org"),
+        {"c": body.plan_code, "org": org},
     )).scalar()
     granted = int(grant) if grant else 0
     if granted > 0:
         await db.execute(
-            text("INSERT INTO prepaid_ledger (client_id, kind, amount_cents, source, idempotency_key, meta) "
-                 "VALUES (:c, 'credit', :a, 'grant_plan', :k, CAST(:m AS jsonb)) "
+            text("INSERT INTO prepaid_ledger (client_id, organization_id, kind, amount_cents, source, idempotency_key, meta) "
+                 "VALUES (:c, :org, 'credit', :a, 'grant_plan', :k, CAST(:m AS jsonb)) "
                  "ON CONFLICT (client_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING"),
-            {"c": r.client_id, "a": granted, "k": f"grant-{r.client_id}-{body.plan_code}",
+            {"c": r.client_id, "org": org, "a": granted, "k": f"grant-{r.client_id}-{body.plan_code}",
              "m": _json.dumps({"plan": body.plan_code, "external_ref": body.external_ref})},
         )
     return AppOnboardResponse(client_id=r.client_id, wallet_id=r.wallet_id,
