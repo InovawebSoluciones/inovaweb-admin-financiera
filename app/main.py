@@ -23,12 +23,15 @@ from app.routers import (
     auth_router,
     catalog_plans_router,
     catalog_promos_router,
+    catalog_read_router,
     catalog_services_router,
+    client_account_router,
     health_router,
     org_admin_router,
     orgs_router,
     portal_router,
     reports_router,
+    security_router,
     users_router,
     webhooks_router,
 )
@@ -110,6 +113,9 @@ app.include_router(users_router.router)
 app.include_router(adjustments_router.router)
 app.include_router(org_admin_router.router)
 app.include_router(reports_router.router)
+app.include_router(catalog_read_router.router)
+app.include_router(client_account_router.router)
+app.include_router(security_router.router)
 app.include_router(webhooks_router.router)
 
 
