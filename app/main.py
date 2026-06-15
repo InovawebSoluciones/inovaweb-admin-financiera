@@ -20,6 +20,9 @@ from app.routers import (
     admin_router,
     api_router,
     auth_router,
+    catalog_plans_router,
+    catalog_promos_router,
+    catalog_services_router,
     health_router,
     orgs_router,
     portal_router,
@@ -96,6 +99,9 @@ app.include_router(admin_router.router)
 app.include_router(portal_router.router)
 app.include_router(api_router.router)
 app.include_router(orgs_router.router)
+app.include_router(catalog_services_router.router)
+app.include_router(catalog_plans_router.router)
+app.include_router(catalog_promos_router.router)
 app.include_router(webhooks_router.router)
 
 
