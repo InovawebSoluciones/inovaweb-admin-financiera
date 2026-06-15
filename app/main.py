@@ -17,6 +17,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.core.config import get_settings
 from app.core.observability import RequestContextMiddleware, configure_logging
 from app.routers import (
+    adjustments_router,
     admin_router,
     api_router,
     auth_router,
@@ -24,8 +25,11 @@ from app.routers import (
     catalog_promos_router,
     catalog_services_router,
     health_router,
+    org_admin_router,
     orgs_router,
     portal_router,
+    reports_router,
+    users_router,
     webhooks_router,
 )
 
@@ -102,6 +106,10 @@ app.include_router(orgs_router.router)
 app.include_router(catalog_services_router.router)
 app.include_router(catalog_plans_router.router)
 app.include_router(catalog_promos_router.router)
+app.include_router(users_router.router)
+app.include_router(adjustments_router.router)
+app.include_router(org_admin_router.router)
+app.include_router(reports_router.router)
 app.include_router(webhooks_router.router)
 
 
