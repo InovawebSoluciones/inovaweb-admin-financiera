@@ -118,6 +118,43 @@ async def list_orgs(
     return {"organizations": [dict(r) for r in rows]}
 
 
+@router.get("/orgs/{org_id}/consumo")
+async def org_consumo(
+    org_id: int,
+    user: CurrentUser = Depends(_SUPER),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Desglose del consumo del mes de una org: por tenant (cliente) y por servicio.
+
+    Es el dato de fondo de la consola (consumos por cliente/servicio dentro de la
+    organización). Plataforma ve cualquier org; un super_admin solo la suya.
+    """
+    if not _can_manage_org(user, org_id):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "sin permiso sobre esta organización")
+    por_tenant = (await db.execute(text("""
+        SELECT c.id AS client_id, c.legal_name,
+               COALESCE(sum(CASE WHEN l.kind='debit'
+                 AND l.created_at >= date_trunc('month', now())
+                 THEN l.amount_cents ELSE 0 END), 0) AS consumo_mes_cents
+        FROM clients c LEFT JOIN prepaid_ledger l ON l.client_id = c.id
+        WHERE c.organization_id = :org
+        GROUP BY c.id, c.legal_name ORDER BY consumo_mes_cents DESC
+    """), {"org": org_id})).mappings().all()
+    por_servicio = (await db.execute(text("""
+        SELECT service_code,
+               sum(amount_cents) AS consumo_mes_cents, sum(units) AS units
+        FROM prepaid_ledger
+        WHERE organization_id = :org AND kind='debit' AND service_code IS NOT NULL
+          AND created_at >= date_trunc('month', now())
+        GROUP BY service_code ORDER BY consumo_mes_cents DESC
+    """), {"org": org_id})).mappings().all()
+    return {
+        "organization_id": org_id,
+        "por_tenant": [dict(r) for r in por_tenant],
+        "por_servicio": [dict(r) for r in por_servicio],
+    }
+
+
 # ---------------------------------------------------------------------
 # API keys (plano organización, self-service)
 # ---------------------------------------------------------------------
