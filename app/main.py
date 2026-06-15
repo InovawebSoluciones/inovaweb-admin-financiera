@@ -26,6 +26,7 @@ from app.routers import (
     catalog_read_router,
     catalog_services_router,
     client_account_router,
+    email_providers_router,
     health_router,
     org_admin_router,
     orgs_router,
@@ -116,6 +117,7 @@ app.include_router(reports_router.router)
 app.include_router(catalog_read_router.router)
 app.include_router(client_account_router.router)
 app.include_router(security_router.router)
+app.include_router(email_providers_router.router)
 app.include_router(webhooks_router.router)
 
 
