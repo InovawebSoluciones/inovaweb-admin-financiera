@@ -25,6 +25,7 @@ from app.core.database import get_db
 from app.core.jwt_auth import CurrentUser, require_roles
 from app.core.password import hash_password
 from app.core.tenancy import hash_key
+from app.services.saas_billing import register_org_as_platform_client
 
 router = APIRouter(prefix="/api/v2", tags=["orgs"])
 
@@ -94,6 +95,10 @@ async def create_org(
         INSERT INTO user_roles (user_id, role_id)
         SELECT :uid, id FROM roles WHERE code = 'super_admin'
     """), {"uid": owner_id})
+
+    # registra la org como cliente de la plataforma (sujeto de meta-cobro del SaaS):
+    # crea su fila clients en la org 1 + suscripcion al plan caf_saas + enlace.
+    await register_org_as_platform_client(db, org_id, body.name)
 
     return CreateOrgResponse(organization_id=org_id, slug=body.slug,
                              owner_user_id=owner_id, owner_temp_password=temp_pw)

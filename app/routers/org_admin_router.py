@@ -10,7 +10,9 @@ La org 1 (plataforma) está protegida: no se puede suspender ni cancelar.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from datetime import date
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
@@ -19,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.audit import bind_actor
 from app.core.database import get_db
 from app.core.jwt_auth import CurrentUser, require_roles
+from app.services.saas_billing import get_saas_account, run_saas_monthly_billing
 
 router = APIRouter(prefix="/api/v2/orgs", tags=["orgs-admin"])
 
@@ -190,3 +193,44 @@ async def org_detail(
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "organización no existe")
     return dict(row)
+
+
+# ---------------------------------------------------------------------
+# meta-cobro del SaaS (plataforma): estado de cuenta + cierre mensual
+# ---------------------------------------------------------------------
+
+
+@router.get("/{org_id}/saas-account")
+async def org_saas_account(
+    org_id: int,
+    user: CurrentUser = Depends(_platform_only),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Estado de cuenta SaaS de la org frente a la plataforma.
+
+    balance_cents NEGATIVO = la org debe (postpago). usage_mes_cents = consumo +
+    cuota del mes en curso. 404 si la org no esta registrada como cliente de
+    plataforma (sin platform_client_id).
+    """
+    acc = await get_saas_account(db, org_id)
+    if acc is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND,
+                            "org sin cuenta de plataforma (platform_client_id)")
+    return acc
+
+
+@router.post("/saas/run-monthly-billing")
+async def saas_run_monthly_billing(
+    request: Request,
+    user: CurrentUser = Depends(_platform_only),
+    db: AsyncSession = Depends(get_db),
+    period: str | None = Query(None, description="YYYY-MM; default = mes en curso"),
+) -> dict:
+    """Cierre mensual del SaaS: acumula la cuota ($99) a cada org cliente activa.
+
+    Idempotente por (org, period): re-correr el mismo periodo no duplica. Si no
+    se pasa `period`, usa el mes en curso. Solo operador de plataforma.
+    """
+    await _audit(db, user, request)
+    p = period or date.today().strftime("%Y-%m")
+    return await run_saas_monthly_billing(db, p)

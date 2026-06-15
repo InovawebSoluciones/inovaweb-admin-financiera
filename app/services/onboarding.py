@@ -254,6 +254,9 @@ async def onboard_client(
     # un fallo aqui NO debe abortar el onboarding ni revertir nada (el token
     # puede reenviarse). Se ejecuta tras cerrar el medidor y antes de devolver.
     await _send_activation_email(
+        db=db,
+        organization_id=payload.organization_id,
+        client_id=client_id,
         external_user_id=external_user_id,
         titular_email=payload.titular_email,
         titular_name=payload.titular_full_name,
@@ -308,6 +311,9 @@ async def _persist_failure_audit(
 
 async def _send_activation_email(
     *,
+    db: AsyncSession,
+    organization_id: int,
+    client_id: int,
     external_user_id: str,
     titular_email: str,
     titular_name: str,
@@ -329,6 +335,30 @@ async def _send_activation_email(
     """
     s = get_settings()
     token_url = f"https://{s.PORTAL_DOMAIN}/activate?token={activation_token}"
+
+    # 1) Preferir el proveedor de email configurado por la org/cliente (Microsoft/
+    #    Gmail/SMTP propio). Si la org tiene un proveedor default activo, se envia
+    #    con SUS credenciales (cifradas). Best-effort: nunca aborta el onboarding.
+    from app.services.emailer import send_email as _provider_send
+    html = (
+        f"<p>Hola {titular_name},</p>"
+        f"<p>Activa tu cuenta con este enlace (vence en 24 horas):</p>"
+        f'<p><a href="{token_url}">{token_url}</a></p>'
+    )
+    try:
+        r = await _provider_send(
+            db, organization_id, client_id, titular_email,
+            "Activa tu cuenta", html, to_name=titular_name,
+        )
+        if r.get("ok"):
+            log.info("activation_email_sent_via_provider",
+                     extra={"external_user_id": external_user_id})
+            return
+    except Exception as e:  # noqa: BLE001 - best-effort; cae al Centro
+        log.error("activation_email_provider_error",
+                  extra={"external_user_id": external_user_id, "error": str(e)})
+
+    # 2) Fallback: Centro de Mensajes (plantilla caf-activacion-correo).
     messages = MessagesClient()
     try:
         await messages.send_email(

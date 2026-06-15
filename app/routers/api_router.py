@@ -15,6 +15,7 @@ from app.core.database import get_db
 from app.core.jwt_auth import CurrentUser, require_roles
 from app.core.tenancy import assert_client_in_org, resolve_app_org
 from app.services.onboarding import OnboardClientPayload, OnboardingError, onboard_client
+from app.services.saas_billing import accrue_transaction
 
 router = APIRouter(prefix="/api/v2", tags=["api"])
 
@@ -373,13 +374,16 @@ async def api_client_charge(
             detail={"error": "saldo_insuficiente", "balance_cents": bal, "required_cents": amount},
         )
 
-    await db.execute(
+    ledger_id = (await db.execute(
         text("INSERT INTO prepaid_ledger (client_id, organization_id, kind, amount_cents, service_code, units, source, idempotency_key, meta) "
-             "VALUES (:c, :org, 'debit', :a, :sc, :u, 'consumo', :k, CAST(:m AS jsonb))"),
+             "VALUES (:c, :org, 'debit', :a, :sc, :u, 'consumo', :k, CAST(:m AS jsonb)) RETURNING id"),
         {"c": client_id, "org": org, "a": amount, "sc": body.service_code, "u": body.units,
          "k": body.idempotency_key, "m": _json.dumps(body.meta) if body.meta else None},
-    )
+    )).scalar_one()
     await db.commit()
+    # meta-cobro del SaaS: 1 transaccion del motor = un accrual a la org (best-effort,
+    # sesion propia; org plataforma se omite dentro; jamas rompe el cargo del cliente).
+    await accrue_transaction(org, f"charge-{ledger_id}")
     return ChargeResponse(ok=True, client_id=client_id, service_code=body.service_code,
                           units=body.units, charged_cents=amount, balance_cents=bal - amount)
 
