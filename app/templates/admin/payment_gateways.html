@@ -7,9 +7,32 @@
 {% endif %}
 {% if saved == '1' %}
 <div class="mb-4 rounded bg-green-50 border border-green-200 text-green-700 text-sm px-4 py-2">Credenciales guardadas y cifradas en el Hub.</div>
+{% elif saved == 'default_ok' %}
+<div class="mb-4 rounded bg-green-50 border border-green-200 text-green-700 text-sm px-4 py-2">Pasarela activa actualizada. El CAF empezará a cobrar por esta.</div>
 {% elif saved and saved.startswith('error') %}
-<div class="mb-4 rounded bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2">No se pudo guardar ({{ saved }}). Revisa los campos y la conexión con el Hub.</div>
+<div class="mb-4 rounded bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2">No se pudo ({{ saved }}). Revisa los campos y la conexión con el Hub.</div>
 {% endif %}
+
+{# --- selector de la pasarela ACTIVA con la que cobra el CAF --- #}
+{% set actives = configured | selectattr('is_active') | selectattr('configured') | list %}
+<div class="mb-6 bg-white shadow-sm rounded p-4">
+  <div class="font-semibold text-slate-700 mb-1">Pasarela activa para cobrar</div>
+  <p class="text-xs text-slate-400 mb-3">Es la que el CAF usa para cobrar (LiaForge y demás apps). Elige una y guarda.</p>
+  {% if actives %}
+  <form method="post" action="/admin/payment-gateways/default" class="flex flex-wrap items-center gap-4 text-sm">
+    {% for r in actives %}
+    <label class="flex items-center gap-2">
+      <input type="radio" name="gateway_slug" value="{{ r.gateway_slug }}" {% if r.is_default %}checked{% endif %}>
+      <span class="font-mono">{{ r.gateway_slug }}</span>
+      {% if r.is_default %}<span class="text-[#4F46E5] text-xs">(actual)</span>{% endif %}
+    </label>
+    {% endfor %}
+    <button type="submit" class="bg-[#4F46E5] text-white rounded px-4 py-1.5 hover:bg-[#4338CA]">Usar esta para cobrar</button>
+  </form>
+  {% else %}
+  <p class="text-sm text-amber-600">No hay pasarelas configuradas y activas todavía. Guarda las credenciales de una abajo.</p>
+  {% endif %}
+</div>
 
 <div class="grid md:grid-cols-2 gap-6">
 

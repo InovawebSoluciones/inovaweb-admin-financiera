@@ -163,6 +163,10 @@ async def initiate_charge(
     if plan_code:
         metadata["plan_code"] = plan_code
 
+    # Pasarela ACTIVA elegida por el usuario en el panel (default del Hub).
+    # Fail-safe: si no se puede resolver, cae a HUB_GATEWAY del .env.
+    gateway = await _resolve_gateway()
+
     own_hub = hub is None
     hub = hub or HubClient()
     try:
@@ -173,7 +177,7 @@ async def initiate_charge(
             metadata=metadata,
             customer_email=client.get("billing_email") or "facturacion@inovaweb.com.mx",
             customer_name=client.get("legal_name") or "Cliente Inovaweb",
-            gateway=get_settings().HUB_GATEWAY,
+            gateway=gateway,
         )
     finally:
         if own_hub:
@@ -655,3 +659,22 @@ async def _persist_failure_audit(
 def _now_iso() -> str:
     from datetime import datetime, timezone
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+async def _resolve_gateway() -> str:
+    """Pasarela activa con la que cobra el CAF = la default del Hub (la que el
+    usuario elige en el panel). Fail-safe: ante cualquier fallo cae a HUB_GATEWAY
+    del .env (nunca bloquea el cobro)."""
+    s = get_settings()
+    if not getattr(s, "HUB_ADMIN_KEY", None):
+        return s.HUB_GATEWAY
+    try:
+        from app.core.clients.hub_client import HubAdminClient
+        cli = HubAdminClient()
+        try:
+            chosen = await cli.default_gateway(s.HUB_COMPANY_ID)
+        finally:
+            await cli.close()
+        return chosen or s.HUB_GATEWAY
+    except Exception:  # noqa: BLE001 - jamas romper el cobro por resolver la pasarela
+        return s.HUB_GATEWAY

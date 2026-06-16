@@ -110,5 +110,20 @@ class HubAdminClient:
             },
         )
 
+    async def set_default(self, *, company_id: str, gateway_slug: str) -> dict[str, Any]:
+        """Fija la pasarela activa por defecto (sin re-enviar credenciales)."""
+        return await self.c.post(
+            "/admin/hub/v1/gateway-default",
+            json={"company_id": company_id, "gateway_slug": gateway_slug},
+        )
+
+    async def default_gateway(self, company_id: str) -> str | None:
+        """Devuelve el slug de la pasarela default activa del tenant, o None."""
+        data = await self.list_gateways(company_id)
+        for r in data.get("configured", []):
+            if r.get("is_default") and r.get("is_active"):
+                return r["gateway_slug"]
+        return None
+
     async def close(self) -> None:
         await self.c.close()

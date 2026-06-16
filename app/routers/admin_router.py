@@ -629,10 +629,38 @@ async def save_payment_gateway(
             company_id=s.HUB_COMPANY_ID, gateway_slug=slug, credentials=creds,
             is_default=(is_default == "on"), is_active=(is_active != "off"),
         )
-    except Exception as e:  # noqa: BLE001
-        log_msg = str(e)[:120].replace(" ", "_").replace("/", "-")
+    except Exception:  # noqa: BLE001
         return RedirectResponse(
-            f"/admin/payment-gateways?saved=error", status_code=303)
+            "/admin/payment-gateways?saved=error", status_code=303)
     finally:
         await cli.close()
     return RedirectResponse("/admin/payment-gateways?saved=1", status_code=303)
+
+
+@router.post("/payment-gateways/default")
+async def set_default_payment_gateway(
+    request: Request,
+    user: CurrentUser = Depends(_ADMIN),
+    gateway_slug: str = Form(...),
+):
+    """Fija la pasarela ACTIVA con la que cobra el CAF (la que elige el usuario).
+
+    Es la que de verdad decide el cobro: el CAF la lee al iniciar cada cargo. No
+    re-envía credenciales (solo marca el default en el Hub).
+    """
+    from app.core.clients.hub_client import HubAdminClient
+    from app.core.config import get_settings
+    s = get_settings()
+    if not s.HUB_ADMIN_KEY:
+        return RedirectResponse(
+            "/admin/payment-gateways?saved=error_sin_admin_key", status_code=303)
+    cli = HubAdminClient()
+    try:
+        await cli.set_default(company_id=s.HUB_COMPANY_ID,
+                              gateway_slug=gateway_slug.lower().strip())
+    except Exception:  # noqa: BLE001
+        return RedirectResponse(
+            "/admin/payment-gateways?saved=error_default", status_code=303)
+    finally:
+        await cli.close()
+    return RedirectResponse("/admin/payment-gateways?saved=default_ok", status_code=303)
