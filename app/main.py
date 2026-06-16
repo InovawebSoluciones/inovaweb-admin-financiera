@@ -12,6 +12,8 @@ import logging
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.core.config import get_settings
@@ -139,12 +141,44 @@ async def root(request: Request):
 # ---------------------------------------------------------------------
 
 
-@app.exception_handler(HTTPException)
-async def http_exc_handler(request: Request, exc: HTTPException):
-    if request.url.path.startswith("/api/") or "application/json" in request.headers.get("accept", ""):
+templates = Jinja2Templates(directory="app/templates")
+
+
+def _is_ui(path: str) -> bool:
+    """True para las pantallas HTML del panel/portal (admin, portal, login...)."""
+    return (
+        path.startswith("/admin")
+        or path.startswith("/portal")
+        or path in ("/", "/login", "/logout", "/signup-request")
+    )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exc_handler(request: Request, exc: StarletteHTTPException):
+    # APIs/webhooks/máquina -> JSON (contrato intacto). Solo el panel HTML recibe
+    # trato amigable: sesión caducada -> login; otros errores -> página limpia.
+    if not _is_ui(request.url.path):
         return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
-    # HTML: deja que el handler default lo maneje
-    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+    if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+        return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+    return templates.TemplateResponse(
+        request, "error.html",
+        {"code": exc.status_code, "detail": exc.detail},
+        status_code=exc.status_code,
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exc_handler(request: Request, exc: Exception):
+    """Errores no controlados: log con traza + página limpia en el panel HTML."""
+    log.exception("unhandled_exception", extra={"path": request.url.path})
+    if not _is_ui(request.url.path):
+        return JSONResponse({"detail": "error interno"}, status_code=500)
+    return templates.TemplateResponse(
+        request, "error.html",
+        {"code": 500, "detail": "Ocurrió un error inesperado. Intenta de nuevo."},
+        status_code=500,
+    )
 
 
 @app.on_event("startup")
