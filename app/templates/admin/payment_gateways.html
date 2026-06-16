@@ -58,10 +58,10 @@
         <label class="block"><span class="text-slate-600">Secret key (sk_…)</span>
           <input type="password" name="cred_secret_key" autocomplete="off"
                  placeholder="sk_live_… o sk_test_…" class="mt-1 w-full border rounded px-2 py-1.5 font-mono"></label>
-        <label class="block"><span class="text-slate-600">Webhook signing secret (whsec_…)</span>
+        <label class="block"><span class="text-slate-600">Webhook signing secret (whsec_…) <span class="text-slate-400">— opcional</span></span>
           <input type="password" name="cred_webhook_secret" autocomplete="off"
-                 placeholder="whsec_…" class="mt-1 w-full border rounded px-2 py-1.5 font-mono"></label>
-        <p class="text-xs text-slate-400">El webhook de Stripe debe apuntar a <span class="font-mono">https://hub.inovaweb.com.mx/webhooks/stripe</span> con eventos <span class="font-mono">checkout.session.*</span>.</p>
+                 placeholder="whsec_… (puedes dejarlo y agregarlo después)" class="mt-1 w-full border rounded px-2 py-1.5 font-mono"></label>
+        <p class="text-xs text-slate-400">Puedes guardar solo con la <b>Secret key</b> para probar el cobro. El <b>whsec_</b> lo necesitas para confirmar pagos: crea el webhook en Stripe apuntando a <span class="font-mono">https://hub.inovaweb.com.mx/webhooks/stripe</span> (eventos <span class="font-mono">checkout.session.*</span>) y guárdalo aquí cuando lo tengas.</p>
       </div>
 
       <!-- Conekta -->

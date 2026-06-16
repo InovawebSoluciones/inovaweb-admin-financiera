@@ -544,6 +544,13 @@ _GATEWAY_FIELDS = {
     "stripe":  ["secret_key", "webhook_secret"],
     "conekta": ["private_key", "public_key", "webhook_secret"],
 }
+# campos OBLIGATORIOS para guardar (el resto, como webhook_secret, son opcionales
+# y se pueden añadir después). Permite guardar la secret_key y probar el cobro
+# antes de crear el webhook.
+_GATEWAY_REQUIRED = {
+    "stripe":  ["secret_key"],
+    "conekta": ["private_key", "public_key"],
+}
 
 
 @router.get("/payment-gateways", response_class=HTMLResponse)
@@ -605,9 +612,12 @@ async def save_payment_gateway(
         for f in _GATEWAY_FIELDS[slug]
         if str(form.get(f"cred_{f}", "")).strip()
     }
-    if len(creds) < len(_GATEWAY_FIELDS[slug]):
+    # solo se exigen los campos obligatorios; webhook_secret es opcional (se
+    # puede añadir luego, al crear el webhook en la pasarela).
+    missing = [f for f in _GATEWAY_REQUIRED.get(slug, _GATEWAY_FIELDS[slug]) if f not in creds]
+    if missing:
         return RedirectResponse(
-            f"/admin/payment-gateways?saved=error_faltan_campos", status_code=303)
+            "/admin/payment-gateways?saved=error_faltan_campos", status_code=303)
 
     if not s.HUB_ADMIN_KEY:
         return RedirectResponse(
