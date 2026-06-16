@@ -111,8 +111,8 @@ async def list_clients(
     sql = f"""
         SELECT id, legal_name, rfc, status, billing_email, created_at
         FROM clients
-        WHERE (:q IS NULL OR legal_name ILIKE '%'||:q||'%' OR rfc ILIKE '%'||:q||'%')
-          AND (:st IS NULL OR status = :st){oc}
+        WHERE (CAST(:q AS text) IS NULL OR legal_name ILIKE '%'||:q||'%' OR rfc ILIKE '%'||:q||'%')
+          AND (CAST(:st AS text) IS NULL OR status = :st){oc}
         ORDER BY created_at DESC LIMIT 200
     """
     rows = (await db.execute(text(sql), {"q": q, "st": page_status, **op})).mappings().all()
@@ -522,8 +522,8 @@ async def audit_log_view(
         SELECT a.id, a.occurred_at, u.email AS actor_email, a.actor_ip,
                a.entity_type, a.entity_id, a.action, a.request_id
         FROM audit_log a LEFT JOIN users u ON u.id = a.actor_user_id
-        WHERE (:e IS NULL OR a.entity_type = :e)
-          AND (:u IS NULL OR a.actor_user_id = :u){oc}
+        WHERE (CAST(:e AS text) IS NULL OR a.entity_type = :e)
+          AND (CAST(:u AS integer) IS NULL OR a.actor_user_id = :u){oc}
         ORDER BY a.occurred_at DESC LIMIT 500
     """), {"e": entity, "u": actor, **op})).mappings().all()
     return templates.TemplateResponse(
