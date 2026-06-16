@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     # (sandbox interno del Hub, pago simulado sin tarjeta); prod='conekta' u otra
     # real configurada en el Hub para la company.
     HUB_GATEWAY: str = "mock"
+    # Admin del Hub: llave con scope 'admin:gateways' para configurar las
+    # credenciales de pasarela de un tenant desde el panel del CAF (cifra en el
+    # Hub). HUB_COMPANY_ID = el tenant del Hub que administra el CAF (Inovaweb).
+    HUB_ADMIN_KEY: SecretStr | None = None
+    HUB_COMPANY_ID: str = "b5237689-c2b3-48b5-8faa-595fc41dc0c7"
 
     # --- apps Nivel 3 (orquestacion desde el CAF) ---
     # Scraping Universidades: el CAF liga wallet + cliente en el alta (#16).

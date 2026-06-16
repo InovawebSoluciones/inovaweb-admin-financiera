@@ -1,0 +1,96 @@
+{% extends "admin/_layout.html" %}
+{% block heading %}Pasarelas de pago (Hub){% endblock %}
+{% block content %}
+
+{% if error %}
+<div class="mb-4 rounded bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2">{{ error }}</div>
+{% endif %}
+{% if saved == '1' %}
+<div class="mb-4 rounded bg-green-50 border border-green-200 text-green-700 text-sm px-4 py-2">Credenciales guardadas y cifradas en el Hub.</div>
+{% elif saved and saved.startswith('error') %}
+<div class="mb-4 rounded bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2">No se pudo guardar ({{ saved }}). Revisa los campos y la conexión con el Hub.</div>
+{% endif %}
+
+<div class="grid md:grid-cols-2 gap-6">
+
+  <!-- estado actual -->
+  <div class="bg-white shadow-sm rounded p-4">
+    <div class="font-semibold text-slate-700 mb-3">Pasarelas del tenant</div>
+    <p class="text-xs text-slate-400 mb-2 font-mono">{{ company_id }}</p>
+    <table class="w-full text-sm">
+      <thead class="bg-slate-100 text-xs uppercase text-slate-600">
+        <tr><th class="px-3 py-2 text-left">Pasarela</th><th class="px-3 py-2">Default</th>
+          <th class="px-3 py-2">Activa</th><th class="px-3 py-2">Configurada</th></tr>
+      </thead>
+      <tbody>
+        {% for r in configured %}
+        <tr class="border-t">
+          <td class="px-3 py-2 font-mono">{{ r.gateway_slug }}</td>
+          <td class="px-3 py-2 text-center">{% if r.is_default %}<span class="text-[#4F46E5]">●</span>{% else %}—{% endif %}</td>
+          <td class="px-3 py-2 text-center">{% if r.is_active %}<span class="text-green-600">sí</span>{% else %}<span class="text-slate-400">no</span>{% endif %}</td>
+          <td class="px-3 py-2 text-center">{% if r.configured %}<span class="text-green-600">✓</span>{% else %}<span class="text-amber-500">pendiente</span>{% endif %}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="4" class="px-3 py-4 text-center text-slate-400">Sin pasarelas configuradas.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <p class="text-xs text-slate-400 mt-3">Las credenciales nunca se muestran: solo se indica si están configuradas. El Hub las guarda cifradas (AES-256-GCM).</p>
+  </div>
+
+  <!-- formulario -->
+  <div class="bg-white shadow-sm rounded p-4">
+    <div class="font-semibold text-slate-700 mb-3">Guardar credenciales</div>
+    <form method="post" action="/admin/payment-gateways" class="space-y-3 text-sm">
+
+      <label class="block">
+        <span class="text-slate-600">Pasarela</span>
+        <select name="gateway_slug" id="gw" onchange="toggleFields()"
+                class="mt-1 w-full border rounded px-2 py-1.5">
+          {% for g in catalog %}{% if g.slug in fields %}
+          <option value="{{ g.slug }}">{{ g.name }} ({{ g.currencies|join(', ') }})</option>
+          {% endif %}{% endfor %}
+        </select>
+      </label>
+
+      <!-- Stripe -->
+      <div data-gw="stripe" class="gw-fields space-y-3">
+        <label class="block"><span class="text-slate-600">Secret key (sk_…)</span>
+          <input type="password" name="cred_secret_key" autocomplete="off"
+                 placeholder="sk_live_… o sk_test_…" class="mt-1 w-full border rounded px-2 py-1.5 font-mono"></label>
+        <label class="block"><span class="text-slate-600">Webhook signing secret (whsec_…)</span>
+          <input type="password" name="cred_webhook_secret" autocomplete="off"
+                 placeholder="whsec_…" class="mt-1 w-full border rounded px-2 py-1.5 font-mono"></label>
+        <p class="text-xs text-slate-400">El webhook de Stripe debe apuntar a <span class="font-mono">https://hub.inovaweb.com.mx/webhooks/stripe</span> con eventos <span class="font-mono">checkout.session.*</span>.</p>
+      </div>
+
+      <!-- Conekta -->
+      <div data-gw="conekta" class="gw-fields space-y-3" style="display:none">
+        <label class="block"><span class="text-slate-600">Private key</span>
+          <input type="password" name="cred_private_key" autocomplete="off" class="mt-1 w-full border rounded px-2 py-1.5 font-mono"></label>
+        <label class="block"><span class="text-slate-600">Public key</span>
+          <input type="text" name="cred_public_key" autocomplete="off" class="mt-1 w-full border rounded px-2 py-1.5 font-mono"></label>
+        <label class="block"><span class="text-slate-600">Webhook secret</span>
+          <input type="password" name="cred_webhook_secret" autocomplete="off" class="mt-1 w-full border rounded px-2 py-1.5 font-mono"></label>
+      </div>
+
+      <label class="flex items-center gap-2"><input type="checkbox" name="is_active" value="on" checked> <span class="text-slate-600">Activa</span></label>
+      <label class="flex items-center gap-2"><input type="checkbox" name="is_default" value="on"> <span class="text-slate-600">Default (cobra por esta si el CAF no especifica otra)</span></label>
+
+      <button type="submit" class="bg-[#4F46E5] text-white rounded px-4 py-2 hover:bg-[#4338CA]">Guardar (cifra en el Hub)</button>
+    </form>
+  </div>
+</div>
+
+<script>
+function toggleFields(){
+  var gw = document.getElementById('gw').value;
+  document.querySelectorAll('.gw-fields').forEach(function(d){
+    var on = d.getAttribute('data-gw') === gw;
+    d.style.display = on ? '' : 'none';
+    d.querySelectorAll('input').forEach(function(i){ i.disabled = !on; });
+  });
+}
+toggleFields();
+</script>
+{% endblock %}

@@ -530,3 +530,99 @@ async def audit_log_view(
         request, "admin/audit_log.html",
         {"user": user, "rows": list(rows), "entity": entity, "actor": actor},
     )
+
+
+# ---------------------------------------------------------------------
+# pasarelas de pago (Hub) — guardar credenciales cifradas SIN tocar SQL.
+# El CAF (rector) administra las pasarelas del tenant del Hub; el Hub cifra
+# y guarda (POST /admin/hub/v1/gateway-config). Solo super_admin.
+# ---------------------------------------------------------------------
+
+# campos de credencial por pasarela (lo que espera el constructor del gateway
+# en el Hub). El CAF nunca guarda estos valores: los reenvía al Hub para cifrar.
+_GATEWAY_FIELDS = {
+    "stripe":  ["secret_key", "webhook_secret"],
+    "conekta": ["private_key", "public_key", "webhook_secret"],
+}
+
+
+@router.get("/payment-gateways", response_class=HTMLResponse)
+async def payment_gateways(
+    request: Request,
+    user: CurrentUser = Depends(_ADMIN),
+) -> HTMLResponse:
+    """Pantalla de pasarelas: estado por pasarela del tenant del Hub + formulario
+    para guardar credenciales (Stripe, Conekta). Las llaves NUNCA se muestran."""
+    from app.core.clients.hub_client import HubAdminClient
+    from app.core.config import get_settings
+    s = get_settings()
+    configured: list = []
+    catalog: list = []
+    error: str | None = None
+    if not s.HUB_ADMIN_KEY:
+        error = "HUB_ADMIN_KEY no configurada en el CAF."
+    else:
+        cli = HubAdminClient()
+        try:
+            data = await cli.list_gateways(s.HUB_COMPANY_ID)
+            configured = data.get("configured", [])
+            catalog = [g for g in data.get("catalog", []) if g.get("status") == "active"]
+        except Exception as e:  # noqa: BLE001
+            error = f"No se pudo consultar el Hub: {e}"
+        finally:
+            await cli.close()
+    return templates.TemplateResponse(
+        request, "admin/payment_gateways.html",
+        {"user": user, "company_id": s.HUB_COMPANY_ID, "fields": _GATEWAY_FIELDS,
+         "configured": configured, "catalog": catalog, "error": error,
+         "saved": request.query_params.get("saved")},
+    )
+
+
+@router.post("/payment-gateways")
+async def save_payment_gateway(
+    request: Request,
+    user: CurrentUser = Depends(_ADMIN),
+    gateway_slug: str = Form(...),
+    is_default: str | None = Form(None),
+    is_active: str | None = Form(None),
+):
+    """Recibe el formulario y manda las credenciales al Hub (que las cifra).
+
+    Lee dinámicamente los campos `cred_<nombre>` según la pasarela; descarta
+    vacíos. El CAF no persiste ninguna credencial.
+    """
+    from app.core.clients.hub_client import HubAdminClient
+    from app.core.config import get_settings
+    s = get_settings()
+    slug = gateway_slug.lower().strip()
+    if slug not in _GATEWAY_FIELDS:
+        raise HTTPException(422, "pasarela no soportada por este formulario")
+
+    form = await request.form()
+    creds = {
+        f: str(form.get(f"cred_{f}", "")).strip()
+        for f in _GATEWAY_FIELDS[slug]
+        if str(form.get(f"cred_{f}", "")).strip()
+    }
+    if len(creds) < len(_GATEWAY_FIELDS[slug]):
+        return RedirectResponse(
+            f"/admin/payment-gateways?saved=error_faltan_campos", status_code=303)
+
+    if not s.HUB_ADMIN_KEY:
+        return RedirectResponse(
+            "/admin/payment-gateways?saved=error_sin_admin_key", status_code=303)
+
+    cli = HubAdminClient()
+    try:
+        await cli.save_gateway(
+            company_id=s.HUB_COMPANY_ID, gateway_slug=slug, credentials=creds,
+            is_default=(is_default == "on"), is_active=(is_active != "off"),
+        )
+    except Exception as e:  # noqa: BLE001
+        log_msg = str(e)[:120].replace(" ", "_").replace("/", "-")
+        return RedirectResponse(
+            f"/admin/payment-gateways?saved=error", status_code=303)
+    finally:
+        await cli.close()
+    return RedirectResponse("/admin/payment-gateways?saved=1", status_code=303)

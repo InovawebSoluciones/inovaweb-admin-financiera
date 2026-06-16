@@ -72,3 +72,43 @@ class HubClient:
 
     async def close(self) -> None:
         await self.c.close()
+
+
+def make_admin() -> CoreClient:
+    s = get_settings()
+    key = s.HUB_ADMIN_KEY.get_secret_value() if s.HUB_ADMIN_KEY else ""
+    return CoreClient(
+        "hub-admin", s.HUB_BASE_URL, key,
+        timeout_sec=s.HTTP_TIMEOUT_SEC, retries=s.HTTP_RETRIES,
+    )
+
+
+class HubAdminClient:
+    """Admin del Hub (scope `admin:gateways`): configura las credenciales de
+    pasarela de un tenant. El Hub las CIFRA y guarda; el CAF nunca las persiste
+    ni las repite en sus respuestas."""
+
+    def __init__(self, c: CoreClient | None = None):
+        self.c = c or make_admin()
+
+    async def list_gateways(self, company_id: str) -> dict[str, Any]:
+        return await self.c.get(
+            "/admin/hub/v1/gateway-config", params={"company_id": company_id}
+        )
+
+    async def save_gateway(
+        self, *, company_id: str, gateway_slug: str,
+        credentials: dict[str, str], is_default: bool = False,
+        is_active: bool = True,
+    ) -> dict[str, Any]:
+        return await self.c.post(
+            "/admin/hub/v1/gateway-config",
+            json={
+                "company_id": company_id, "gateway_slug": gateway_slug,
+                "credentials": credentials, "is_default": is_default,
+                "is_active": is_active,
+            },
+        )
+
+    async def close(self) -> None:
+        await self.c.close()
