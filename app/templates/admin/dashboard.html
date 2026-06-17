@@ -53,15 +53,16 @@
       {% for cu in core_usage %}
       <div>
         <div class="flex justify-between text-xs text-slate-600">
-          <span>{{ cu.core }}</span><span>{{ cu.pct }}%</span>
+          <span>{{ cu.core }}</span>
+          <span>{{ cu.pct }}% <span class="text-slate-400">· ${{ '%.2f'|format((cu.cents or 0)/100) }}</span></span>
         </div>
         <div class="w-full bg-slate-100 rounded h-2 mt-1">
-          <div class="bg-slate-700 h-2 rounded" style="width: {{ cu.pct }}%"></div>
+          <div class="bg-[#4F46E5] h-2 rounded" style="width: {{ cu.pct }}%"></div>
         </div>
       </div>
       {% endfor %}
     </div>
-    <p class="text-xs text-slate-400 mt-3">Datos placeholder; agregado real desde el Medidor.</p>
+    <p class="text-xs text-slate-400 mt-3">Consumo del mes atribuido por core (libro prepago).</p>
   </div>
 </div>
 {% endblock %}

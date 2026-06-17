@@ -62,8 +62,8 @@ async def dashboard(
         SELECT
           (SELECT count(*) FROM clients WHERE status='active'{oc}) AS clients_active,
           (SELECT count(*) FROM clients WHERE status='suspended'{oc}) AS clients_suspended,
-          (SELECT COALESCE(sum(total_cents),0) FROM invoices
-             WHERE status IN ('stamped','paid')
+          (SELECT COALESCE(sum(amount_cents),0) FROM prepaid_ledger
+             WHERE kind='debit'
                AND date_trunc('month', created_at) = date_trunc('month', now()){oc}) AS mtd_income_cents,
           (SELECT count(*) FROM invoices
              WHERE date_trunc('month', created_at) = date_trunc('month', now()){oc}) AS invoices_mtd,
@@ -79,12 +79,24 @@ async def dashboard(
         ORDER BY a.occurred_at DESC LIMIT 10
     """), op)).mappings().all()
 
-    # barras de consumo por core (placeholder; el agregado real vive en el Medidor)
+    # consumo por core del mes: agregado real del libro prepago, atribuido por el
+    # source_core del servicio cobrado. % relativo al total consumido en el mes.
+    oc2, op2 = _org_scope(user, "l.organization_id")
+    core_rows = (await db.execute(text(f"""
+        SELECT s.source_core AS core, COALESCE(sum(l.amount_cents),0) AS cents
+        FROM prepaid_ledger l
+        JOIN services s ON s.code = l.service_code AND s.organization_id = l.organization_id
+        WHERE l.kind='debit'
+          AND date_trunc('month', l.created_at) = date_trunc('month', now()){oc2}
+        GROUP BY s.source_core
+    """), op2)).mappings().all()
+    by_core = {r["core"]: int(r["cents"]) for r in core_rows}
+    total_core = sum(by_core.values()) or 1
     core_usage = [
-        {"core": "Medidor", "pct": 0},
-        {"core": "Hub", "pct": 0},
-        {"core": "Finanzas", "pct": 0},
-        {"core": "Mensajes", "pct": 0},
+        {"core": label, "pct": round(by_core.get(key, 0) / total_core * 100),
+         "cents": by_core.get(key, 0)}
+        for key, label in (("medidor", "Medidor"), ("hub", "Hub"),
+                           ("finanzas", "Finanzas"), ("messages", "Mensajes"))
     ]
 
     return templates.TemplateResponse(
@@ -409,10 +421,17 @@ async def list_plans(
     user: CurrentUser = Depends(_OPS),
     db: AsyncSession = Depends(get_db),
 ) -> HTMLResponse:
-    oc, op = _org_scope(user)
-    rows = (await db.execute(text(
-        f"SELECT * FROM plans WHERE TRUE{oc} ORDER BY name"
-    ), op)).mappings().all()
+    oc, op = _org_scope(user, "p.organization_id")
+    rows = (await db.execute(text(f"""
+        SELECT p.*,
+               COALESCE(string_agg(DISTINCT s.code, ', '), '—') AS servicios
+        FROM plans p
+        LEFT JOIN plan_items pi ON pi.plan_id = p.id
+        LEFT JOIN services s ON s.id = pi.service_id
+        WHERE TRUE{oc}
+        GROUP BY p.id
+        ORDER BY p.name
+    """), op)).mappings().all()
     return templates.TemplateResponse(
         request, "admin/plans.html", {"user": user, "rows": list(rows)},
     )
