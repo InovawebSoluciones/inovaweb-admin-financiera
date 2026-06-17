@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
@@ -11,11 +12,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.audit import bind_actor
 from app.core.clients.medidor_client import MedidorClient
+from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.jwt_auth import CurrentUser, require_roles
 from app.core.tenancy import assert_client_in_org, resolve_app_org
 from app.services.onboarding import OnboardClientPayload, OnboardingError, onboard_client
+from app.services.prepago import PrepagoError, initiate_charge
 from app.services.saas_billing import accrue_transaction
+
+log = logging.getLogger("api_v2")
 
 router = APIRouter(prefix="/api/v2", tags=["api"])
 
@@ -269,6 +274,65 @@ async def api_client_prepaid_balance(
     if bal is None:
         raise HTTPException(404, "cliente no existe")
     return {"client_id": client_id, "balance_cents": int(bal)}
+
+
+@router.post("/clients/{client_id}/recharge")
+async def api_client_recharge(
+    client_id: int, request: Request, db: AsyncSession = Depends(get_db)
+) -> dict:
+    """Inicia una recarga de saldo prepago (maquina-a-maquina, Bearer de app).
+
+    Equivalente app-facing de `POST /portal/recharge`: crea el intento de cobro
+    en el Hub (pasarela ACTIVA elegida en el panel; fail-safe HUB_GATEWAY) y
+    devuelve la URL de checkout para que la app duena (p.ej. LiaForge) redirija
+    al cliente. El webhook `hub-payment-paid` acredita el saldo al confirmarse el
+    pago. Body JSON: `{"amount_cents": int}` (min $50 MXN; tope MAX_RECARGA_CENTS).
+    Reusa el MISMO piso/techo y la misma `initiate_charge` que el portal HTML.
+    """
+    org = await resolve_app_org(request, db)
+    await assert_client_in_org(db, client_id, org)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    try:
+        amount_cents = int(body.get("amount_cents") or body.get("amount") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "amount_cents invalido")
+    # mismo piso/techo que /portal/recharge (piso $50 MXN, tope configurable).
+    max_recarga = get_settings().MAX_RECARGA_CENTS
+    if amount_cents < 5000:
+        raise HTTPException(400, "monto minimo de recarga $50 MXN")
+    if amount_cents > max_recarga:
+        raise HTTPException(400, f"monto maximo de recarga ${max_recarga / 100:,.2f} MXN")
+    c = (await db.execute(
+        text("SELECT * FROM clients WHERE id=:id"), {"id": client_id}
+    )).mappings().first()
+    if not c:
+        raise HTTPException(404, "cliente no existe")
+    if c["status"] != "active":
+        raise HTTPException(402, "cuenta suspendida")
+    if not c.get("hub_account_id"):
+        raise HTTPException(409, "cuenta no provisionada en hub")
+    try:
+        intent = await initiate_charge(
+            db, client=dict(c), amount_cents=amount_cents,
+            purpose="wallet_recharge",
+            description=f"Recarga saldo cliente {client_id}",
+            actor_user_id=None,
+            actor_ip=request.client.host if request.client else None,
+            request_id=getattr(request.state, "request_id", None),
+        )
+    except PrepagoError as e:
+        log.error("api_recharge_failed", extra={"caf_client_id": client_id,
+                                                 "error": str(e)})
+        raise HTTPException(502, "no se pudo iniciar el cobro") from e
+    url = intent.get("checkout_url") or intent.get("url")
+    if not url:
+        raise HTTPException(502, "el hub no devolvio url de checkout")
+    return {"checkout_url": url, "amount_cents": amount_cents}
 
 
 @router.get("/clients/{client_id}/ledger")
