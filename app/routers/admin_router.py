@@ -817,7 +817,7 @@ async def reports_consumption_data(
 
     rows = (await db.execute(text(f"""
         SELECT
-          c.name                               AS client_name,
+          COALESCE(c.trade_name, c.legal_name)  AS client_name,
           COALESCE(s.app_slug, '—')            AS app_slug,
           COALESCE(s.source_core, '—')         AS core,
           l.service_code,
