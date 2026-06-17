@@ -725,3 +725,281 @@ Durante la transición la recarga hace **dual-write** (CAF + Medidor). La **fuen
 (`v_client_balance`). Si divergen, confiar en el CAF y revisar `prepago.py` (idempotencia por `req_id`).
 Ver también §4.2 (saldo Medidor) que ahora es secundario.
 
+---
+
+## 11. Componentes de la sesión 2026-06-16 (SaaS multi-tenant)
+
+> Comandos contra la BD vía: `ssh root@89.116.25.222` y luego
+> `cd /opt/inovaweb-admin-financiera && docker compose exec -T postgres psql -U caf -d admin_financiera`.
+> Comandos contra el backend: contenedor de servicio `admin_financiera` (host 8006).
+
+### 11.1 Aislamiento multi-tenant (organization_id)
+
+**Síntoma:** una organización ve o modifica datos (clientes, saldos, proveedores,
+ajustes, reportes) de otra organización.
+
+**Diagnóstico:** el tenant SIEMPRE sale de la API key o del JWT, **NUNCA del body**
+(regla rector 7). Cada endpoint debe acotar por `organization_id` usando uno de los
+tres helpers, según su tipo de auth:
+- Endpoints **app-facing** (Bearer API key, `app/routers/api_router.py`): deben usar
+  `resolve_app_org(request, db)` (`app/core/tenancy.py`) para obtener el `organization_id`
+  dueño de la llave, y `assert_client_in_org(db, client_id, org_id)` antes de operar
+  sobre cualquier `client_id` recibido (404 si el cliente es de otra org).
+- Endpoints **JWT** del panel/portal (`admin_router.py`, `email_providers_router.py`,
+  `client_account_router.py`, `adjustments_router.py`, `reports_router.py`): deben usar
+  `_org_scope(user)` (o el `_resolve_org(user, org)` del router de email), que toma
+  `user.organization_id` y solo respeta `?org=<id>` cuando `user.is_platform`.
+
+Para auditar un endpoint sospechoso, confirmar que aparece uno de esos helpers y que
+ningún `WHERE` omite `organization_id`:
+```bash
+docker compose exec -T admin_financiera grep -nE "resolve_app_org|assert_client_in_org|_org_scope|_resolve_org" app/routers/<router>.py
+```
+Verificación cruzada de fugas a nivel datos:
+```sql
+-- ¿algún cliente quedó sin org? (no debería existir)
+SELECT id, legal_name FROM clients WHERE organization_id IS NULL;
+-- ¿qué org posee una API key concreta?
+SELECT organization_id, revoked_at, last_used_at FROM api_keys WHERE key_hash = encode(digest('<token>','sha256'),'hex');
+```
+
+**Fix:** corregir el endpoint para que resuelva el tenant del token (helper correcto)
+y filtre por `organization_id`. NUNCA aceptar `organization_id` desde el cuerpo de la
+petición. Las llaves legacy `SCRAPING_ADMIN_KEY`/`SWIGG_ADMIN_KEY` caen a la org
+plataforma (`PLATFORM_ORG_ID = 1`) por diseño — esto es esperado, no una fuga.
+
+**Verificación:** repetir la operación con la llave/JWT de la org B sobre un recurso de
+la org A → debe responder 404 (`assert_client_in_org`) o 403 (`_resolve_org`/`_load_provider_scoped`).
+Existe un script de regresión: `scripts/verify_catalog_isolation.sh`.
+
+---
+
+### 11.2 Pasarelas de pago (front del CAF → Hub-Pasarelas)
+
+**Síntoma:** el panel `/admin/payment-gateways` "no guarda credenciales".
+
+**Diagnóstico:** el front del CAF NO persiste credenciales; las reenvía al Hub, que
+las cifra y guarda. Requiere `HUB_ADMIN_KEY` (scope `admin:gateways`) en el `.env` y
+que el endpoint admin del Hub responda. Sin `HUB_ADMIN_KEY` el guardado redirige a
+`?saved=error_sin_admin_key`.
+```bash
+# ¿está la llave admin del Hub?
+grep -E "^HUB_ADMIN_KEY=" /opt/inovaweb-admin-financiera/.env
+# ¿responde el endpoint admin del Hub para el tenant del CAF (HUB_COMPANY_ID)?
+HUB_ADMIN_KEY=$(grep -E "^HUB_ADMIN_KEY=" /opt/inovaweb-admin-financiera/.env | cut -d= -f2-)
+HUB_COMPANY_ID=$(grep -E "^HUB_COMPANY_ID=" /opt/inovaweb-admin-financiera/.env | cut -d= -f2-)
+HUB_BASE_URL=$(grep -E "^HUB_BASE_URL=" /opt/inovaweb-admin-financiera/.env | cut -d= -f2-)
+curl -s "${HUB_BASE_URL}/admin/hub/v1/gateway-config?company_id=${HUB_COMPANY_ID:-b5237689-c2b3-48b5-8faa-595fc41dc0c7}" \
+  -H "Authorization: Bearer ${HUB_ADMIN_KEY}" | jq
+```
+(El default de `HUB_COMPANY_ID` en `config.py` es `b5237689-c2b3-48b5-8faa-595fc41dc0c7`.)
+
+**Fix:** colocar/corregir `HUB_ADMIN_KEY` en el `.env` del CAF y `docker compose up -d
+admin_financiera`. Si el Hub responde 401, revalidar la llave contra el Hub. El cliente
+de admin del Hub está en `app/core/clients/hub_client.py` (`HubAdminClient`:
+`list_gateways` / `save_gateway` GET·POST `/admin/hub/v1/gateway-config`, `set_default`
+POST `/admin/hub/v1/gateway-default`).
+
+---
+
+**Síntoma:** "no cobra por la pasarela elegida" (recarga sale por otra pasarela).
+
+**Diagnóstico:** el flujo prepago (`prepago.py::_resolve_gateway`) cobra con la pasarela
+**default ACTIVA del Hub** (la que el operador elige en `/admin/payment-gateways`). Si
+no puede resolverla (sin `HUB_ADMIN_KEY` o el Hub falla), cae al fallback `HUB_GATEWAY`
+del `.env` (default `"mock"` en `config.py`).
+```sql
+-- ¿qué pasarela default tiene el panel? (selector); el valor real vive en el Hub
+```
+```bash
+# default real según el Hub (mismo curl de arriba): buscar is_default=true AND is_active=true
+curl -s "${HUB_BASE_URL}/admin/hub/v1/gateway-config?company_id=${HUB_COMPANY_ID}" \
+  -H "Authorization: Bearer ${HUB_ADMIN_KEY}" | jq '.configured[] | select(.is_default and .is_active)'
+# fallback configurado en el CAF
+grep -E "^HUB_GATEWAY=" /opt/inovaweb-admin-financiera/.env
+```
+
+**Fix:** fijar la pasarela correcta como default desde el selector de
+`/admin/payment-gateways` (POST `/admin/payment-gateways/default`, llama a
+`HubAdminClient.set_default`). Asegurar que esa pasarela esté `is_active`. Si se está
+cayendo al fallback no deseado, corregir `HUB_ADMIN_KEY`/conexión al Hub para que
+`_resolve_gateway` resuelva el default real.
+
+**Verificación:** iniciar una recarga de prueba y confirmar en `audit_log`
+(`recharge.initiated`) y en el Hub que la transacción salió por la pasarela esperada.
+
+---
+
+### 11.3 Email por proveedor (crypto AES-256-GCM)
+
+**Síntoma:** "secreto ilegible / no envía"; el test SMTP en `/admin/email-providers`
+devuelve `secreto inválido o ilegible (revisar AES_KEY)`.
+
+**Diagnóstico:** las credenciales de email se guardan cifradas con AES-256-GCM
+(`app/core/crypto.py`, columna `email_providers.secret_encrypted`, tokens con prefijo
+`v1.`). El error casi siempre es `AES_KEY` mal: debe ser base64 que decodifique a
+EXACTAMENTE 32 bytes; si no, `crypto._key()` aborta con `ValueError`. Round-trip de
+cordura del cifrado (debe imprimir `True`):
+```bash
+docker compose exec -T admin_financiera python -c "from app.core.crypto import encrypt_secret,decrypt_secret; t=encrypt_secret('x'); print(decrypt_secret(t)=='x')"
+```
+Si imprime `True` pero un proveedor concreto sigue ilegible, ese secreto se cifró con
+OTRA `AES_KEY` (rotación previa sin re-cifrar). Identificar proveedores afectados:
+```sql
+SELECT id, organization_id, client_id, provider, left(secret_encrypted, 3) AS pref
+FROM email_providers WHERE secret_encrypted IS NOT NULL;
+```
+
+**Fix:**
+- `AES_KEY` mala → corregir el valor en el `.env` (base64 → 32 bytes) y
+  `docker compose up -d admin_financiera`.
+- **NO rotar `AES_KEY`** sin re-cifrar primero todos los `email_providers.secret_encrypted`
+  con la llave nueva (descifrar con la vieja → cifrar con la nueva). Rotar a secas deja
+  todos los secretos ilegibles.
+- Si un secreto quedó huérfano, re-capturarlo desde el panel
+  (PATCH `/admin/email-providers/{id}` con `secret`, que lo re-cifra).
+
+**Verificación:** `POST /admin/email-providers/{id}/test` → `{"ok": true, ...}` (connect +
+login SMTP). El endpoint nunca devuelve el secreto en claro.
+
+---
+
+### 11.4 Meta-cobro SaaS (el CAF se cobra a sí mismo)
+
+**Contexto:** la org plataforma (`PLATFORM_ORG_ID = 1`) cobra a cada org cliente su
+consumo del motor. Cada org se representa como un "cliente de plataforma"
+(`organizations.platform_client_id` → `clients.id`, org 1). El consumo se acumula como
+DÉBITOS POSTPAGO en `prepaid_ledger` (puede dejar saldo negativo).
+`app/services/saas_billing.py`.
+
+**Síntoma:** "no acumula" o "duplica" el consumo SaaS de una org.
+
+**Diagnóstico:** el accrual por transacción (`accrue_transaction`) es **best-effort**:
+corre en su propia sesión, jamás propaga excepción, e idempotente por
+`idempotency_key = saas-tx-{source_ref}`. Si no acumula, buscar sus logs (no rompe el
+flujo de negocio que lo dispara):
+```bash
+docker compose logs --tail 300 admin_financiera | grep -E "saas_accrue_(no_platform_client|no_service|transaction_failed)"
+```
+- `saas_accrue_no_platform_client` → la org no tiene `platform_client_id` (no se corrió
+  `register_org_as_platform_client`; requiere migración 035 con la columna).
+- `saas_accrue_no_service` → falta el servicio `saas_transaccion` en la org 1.
+- "duplica" → revisar que `source_ref` sea estable; el `ON CONFLICT` por
+  `idempotency_key` evita el doble débito si el `source_ref` se repite.
+```sql
+-- débitos SaaS acumulados de una org (vía su cliente de plataforma)
+SELECT pl.created_at, pl.source, pl.amount_cents, pl.idempotency_key
+FROM prepaid_ledger pl
+JOIN organizations o ON o.platform_client_id = pl.client_id
+WHERE o.id = <ORG_ID> AND pl.source IN ('saas_usage','saas_fee')
+ORDER BY pl.created_at DESC LIMIT 30;
+```
+
+**Fix:**
+- Sembrar lo que falte: servicio `saas_transaccion` (99c) y plan `caf_saas` (9900/mes)
+  en la org 1; correr `register_org_as_platform_client` para poblar `platform_client_id`.
+- El **cierre mensual** (cuota del plan) se corre con el script idempotente (cron día 1):
+  ```bash
+  /opt/inovaweb-admin-financiera/scripts/run_saas_monthly_billing.sh
+  # equivale a run_saas_monthly_billing(db, 'YYYY-MM'); correr de más NO duplica
+  # (idempotency_key = saas-fee-{platform_client_id}-{period})
+  ```
+
+**Verificación:** estado de cuenta SaaS de la org (saldo negativo = debe; consumo del mes):
+```bash
+docker compose exec -T admin_financiera python -c "
+import asyncio
+from app.core.database import SessionLocal
+from app.services.saas_billing import get_saas_account
+async def main():
+    async with SessionLocal() as db:
+        print(await get_saas_account(db, <ORG_ID>))
+asyncio.run(main())
+"
+```
+
+---
+
+### 11.5 Sesión / login (panel y portal)
+
+**Contexto:** auth por JWT en cookie httpOnly. El TTL del access token lo gobierna
+`JWT_ACCESS_TTL_MIN` del `.env` (operativamente ~12h; el default de `config.py` es 15
+min y se sobrescribe en prod) y el refresh `JWT_REFRESH_TTL_DAYS`. Verificar el valor
+real:
+```bash
+grep -E "^JWT_ACCESS_TTL_MIN=|^JWT_REFRESH_TTL_DAYS=" /opt/inovaweb-admin-financiera/.env
+```
+
+**Síntoma:** "me sacó de la sesión" en el panel.
+
+**Diagnóstico/Fix:** comportamiento esperado al expirar el token → re-loguear. En
+páginas HTML del panel/portal, un 401 NO devuelve JSON: el handler de
+`StarletteHTTPException` en `app/main.py` redirige a `/login` con 303 (sesión caducada).
+Si el 401 persiste tras re-login válido, revisar rotación de `JWT_SECRET` (invalida
+todos los tokens previos — esperado) y §1.4.
+
+**Síntoma:** resetear el password de un usuario (super-admin/operación).
+```sql
+UPDATE users
+SET password_hash = hash_password('<nueva_contraseña>'),
+    failed_attempts = 0,
+    locked_until = NULL
+WHERE email = '<usuario@cliente.com>';
+```
+Ejecutar vía el contenedor para tener `hash_password` (Argon2) disponible:
+```bash
+docker compose exec -T admin_financiera python -c "
+import asyncio
+from sqlalchemy import text
+from app.core.database import SessionLocal
+from app.core.password import hash_password
+async def main():
+    async with SessionLocal() as db:
+        await db.execute(text(\"UPDATE users SET password_hash=:h, failed_attempts=0, locked_until=NULL WHERE email=:e\"),
+                         {'h': hash_password('<nueva_contraseña>'), 'e': '<usuario@cliente.com>'})
+        await db.commit()
+asyncio.run(main())
+"
+```
+(El hash de Argon2 NO se puede generar en SQL puro; por eso el `UPDATE` con
+`hash_password` corre dentro del contenedor.)
+
+**Verificación:** el usuario inicia sesión en `https://admin.inovaweb.com.mx/login`
+(o `app.inovaweb.com.mx`) con la nueva contraseña; `failed_attempts=0` y
+`locked_until=NULL`.
+
+---
+
+### 11.6 Promociones / código de distribuidor
+
+**Contexto:** los códigos de promoción viven en la tabla `promotions` (por
+`organization_id`), con `max_uses` y `uses_count`. El código de distribuidor se aplica
+en el self-service de apps (`POST /apps/onboard`, `app/routers/api_router.py`): si el
+código es válido y `uses_count < max_uses`, incrementa `uses_count` y aplica su
+`discount_pct` al crédito otorgado. También hay cupones en `app/services/promotions.py`.
+
+**Síntoma:** un código "ya no aplica" o se quiere auditar su uso.
+
+**Diagnóstico:** revisar el contador y el tope del código:
+```sql
+SELECT id, code, kind, discount_pct, discount_cents,
+       max_uses, uses_count, is_active, distributor_id
+FROM promotions
+WHERE code = '<CODIGO_EN_MAYUSCULAS>';
+```
+- `is_active = false` o `max_uses` alcanzado (`uses_count >= max_uses`) → el código deja
+  de aplicar (esperado). El onboard normaliza el código a MAYÚSCULAS y `.strip()` antes
+  de buscarlo.
+
+**Fix:** subir `max_uses` o reactivar el código con un UPDATE auditado en `promotions`
+(la tabla de promociones es administrable, no es append-only financiero):
+```sql
+UPDATE promotions SET max_uses = <nuevo_tope>, is_active = true
+WHERE code = '<CODIGO>' AND organization_id = <ORG_ID>;
+```
+NO decrementar `uses_count` a mano salvo corrección de un uso erróneo plenamente
+justificado.
+
+**Verificación:** repetir `POST /apps/onboard` con el `promo_code` → la respuesta trae
+`promo_applied: true` y el `granted_cents` refleja el bono; `uses_count` sube en 1.
+

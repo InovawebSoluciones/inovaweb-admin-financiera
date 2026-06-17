@@ -1,10 +1,19 @@
 # inovaweb-admin-financiera
 
-Centro de Administración Financiera (CAF) — módulo Nivel 2 de la plataforma
-Inovaweb que convierte la infraestructura técnica de los 4 cores Nivel 1
-(medidor, hub-pasarelas, finanzas-core, centro-mensajes) en un producto
-comercial completo: onboarding atómico, catálogos, planes, promociones,
-cobranza con CFDI 4.0, portal cliente, tableros internos.
+**Motor financiero SaaS multi-tenant (CAF Billing Engine)** — el rector
+financiero multi-organización de la plataforma Inovaweb: fija precio, lleva el
+saldo, cobra el consumo y resuelve la identidad de **todas** las apps
+consumidoras, aislando cada empresa por `organization_id` sobre la
+infraestructura de los 4 cores Nivel 1 (medidor, hub-pasarelas, finanzas-core,
+centro-mensajes).
+
+Más allá del admin financiero de un solo tenant, el CAF es un **motor
+multi-tenant**: una organización de plataforma (Inovaweb, `organization_id=1`)
+da de alta organizaciones cliente, cada una con sus propios clientes
+(`clients`), API keys self-service, catálogo, planes y saldo prepago, todo
+aislado por `organization_id`. Sobre ese motor viven los bloques de
+administración: onboarding atómico, catálogos, planes, promociones, cobranza
+con CFDI 4.0, portal cliente y tableros internos.
 
 **Estado (2026-06-14):** **saldo prepago NATIVO del CAF** (`prepaid_ledger` + `v_client_balance`; el Medidor queda como medidor puro) con **cobro pay-per-use** (`POST /clients/{id}/charge`, 402 si no alcanza) y **onboarding app-facing self-service** (`POST /apps/onboard`, Bearer por app). Apps consumidoras vivas: **LiaForge/Scraping** y **Swigg**, cada una con su Bearer. Sigue vigente: flujo de pago E2E (recarga → Hub → webhook HMAC → CAF → Medidor → Finanzas), onboarding atómico por operador (saga), billing por consumo (`price_catalog`), hardening H1-H5, frontend Jinja2+HTMX. Repo VPS↔GitHub alineados (`af0e078`). Pendiente: DNS/TLS `admin/app.inovaweb.com.mx`, proveedor email en Centro de Mensajes, facturación CFDI (Ecofile, sprint 4). Ver ADR-015/016/017 y `CLAUDE.md §12`.
 
@@ -34,7 +43,27 @@ NIVEL 3 - apps cliente (consumidoras de la plataforma)
 
 Un solo backend FastAPI sirve los dos dominios (`admin` y `app`). El
 middleware `HostEnforcementMiddleware` enruta por `Host` header y bloquea
-cross-domain. Caddy del stack n8n hace TLS y reverse proxy.
+cross-domain. Nginx del stack n8n hace TLS y reverse proxy (el `Caddyfile` del
+repo es solo referencia histórica).
+
+### 1.1.b Motor multi-tenant
+
+El CAF es un motor SaaS multi-tenant con dos planos:
+
+- **Plano PLATAFORMA** (operador Inovaweb, `super_admin` de la org 1): da de
+  alta/edita/suspende/cancela **organizaciones** cliente (`organizations`), ve
+  el consumo agregado de todas y opera el meta-cobro del SaaS (cuota mensual por
+  org via `saas_billing`).
+- **Plano ORGANIZACIÓN** (`super_admin` de su propia org): gestiona sus
+  recursos self-service — acuña/lista/revoca sus **API keys** (`api_keys`,
+  prefijo `cafk_`, guardadas solo por hash SHA-256; el texto plano se muestra
+  una sola vez), sus clientes, catálogo y saldo.
+
+**Aislamiento por `organization_id`:** clientes, API keys, catálogo
+(`services`/`plans`/promos), `prepaid_ledger` y demás recursos llevan
+`organization_id`; cada consulta lo filtra. Una app nueva ya no requiere
+hardcodear una llave en `.env`: se acuña una API key self-service para su
+organización.
 
 ### 1.2 Componentes del repo
 
@@ -50,10 +79,23 @@ cross-domain. Caddy del stack n8n hace TLS y reverse proxy.
 | Clientes cores | `app/core/clients/*` | medidor / hub / finanzas / messages / scraping / pac |
 | Router salud | `app/routers/health_router.py` | `/health`, `/health/db` |
 | Router auth | `app/routers/auth_router.py` | `/login`, `/logout`, `/signup-request` |
-| Router admin | `app/routers/admin_router.py` | `/admin/*` (UI operador) |
+| Router admin | `app/routers/admin_router.py` | `/admin/*` (UI operador: clientes, catálogo, billing, audit-log, pasarelas de pago) |
 | Router portal | `app/routers/portal_router.py` | `/portal/*` (UI cliente) |
-| Router API | `app/routers/api_router.py` | `/api/v2/*` (JSON) |
+| Router API | `app/routers/api_router.py` | `/api/v2/*` (JSON: clients, charge, onboard self-service) |
+| **Router organizaciones** | `app/routers/orgs_router.py` | `/api/v2/orgs` — alta + consumo agregado (plataforma) y API keys self-service (organización) |
+| **Router admin de orgs** | `app/routers/org_admin_router.py` | `/api/v2/orgs/{id}` — editar/suspender/reactivar/cancelar + `saas-account` (meta-cobro SaaS, exclusivo plataforma) |
+| Router catálogo (CRUD) | `app/routers/catalog_{services,plans,promos}_router.py` | `/admin/catalog/*` — CRUD por organización |
+| Router catálogo (lectura) | `app/routers/catalog_read_router.py` | `/api/v2/catalog/*` |
+| Router usuarios | `app/routers/users_router.py` | `/admin/users/*` |
+| Router reportes | `app/routers/reports_router.py` | `/admin/reports/*` |
+| Router ajustes | `app/routers/adjustments_router.py` | `/admin/*` — notas/ajustes append-only |
+| Router seguridad | `app/routers/security_router.py` | `/admin/security/*` |
+| Router pasarelas de pago | `app/routers/admin_router.py` | `/admin/payment-gateways` — config de pasarela del tenant en el Hub |
+| Router proveedores de email | `app/routers/email_providers_router.py` | `/admin/email-providers/*` |
+| Router cuenta de cliente | `app/routers/client_account_router.py` | `/admin/*` |
 | Router webhooks | `app/routers/webhooks_router.py` | `/webhooks/pac`, `/webhooks/hub-payment-paid` |
+| Servicio SaaS billing | `app/services/saas_billing.py` | Registra cada org como cliente de plataforma + meta-cobro mensual ($99/org, idempotente por período); estado de cuenta SaaS |
+| Tenancy | `app/core/tenancy.py` | Hash de API keys (`hash_key`) + resolución de `organization_id` por llave |
 | Servicio onboarding | `app/services/onboarding.py` | Saga de alta atómica cross-core + link Scraping + token activación |
 | Servicio prepago | `app/services/prepago.py` | Cargo Hub → acreditación wallet Medidor (piloto) |
 | Servicio billing | `app/services/billing.py` | Cierre mensual: plan + overage + IA + mensajes por canal |
@@ -104,9 +146,9 @@ falla al arrancar (`pydantic-settings` con `Field(...)`).
 | `POSTGRES_USER` | — | `caf` | — |
 | `POSTGRES_PASSWORD` | ✅ | — | — |
 | `POSTGRES_DB` | — | `admin_financiera` | — |
-| `AES_KEY` | ✅ | — | Base64 32 bytes (AES-256-GCM) |
+| `AES_KEY` | ✅ | — | Base64 32 bytes (AES-256-GCM). Cifra secretos sensibles (CSD, credenciales de pasarela del tenant). Valor real en `.env` del VPS — nunca placeholder en prod |
 | `JWT_SECRET` | ✅ | — | HMAC SHA-256, mín. 32 bytes |
-| `JWT_ACCESS_TTL_MIN` | — | `15` | — |
+| `JWT_ACCESS_TTL_MIN` | — | `720` | TTL del access token (min). Prod = `720` (12 h) por sesión de operador prolongada; default histórico del código = `15` |
 | `JWT_REFRESH_TTL_DAYS` | — | `30` | — |
 | `ADMIN_DOMAIN` | — | `admin.inovaweb.com.mx` | — |
 | `PORTAL_DOMAIN` | — | `app.inovaweb.com.mx` | — |
@@ -114,6 +156,9 @@ falla al arrancar (`pydantic-settings` con `Field(...)`).
 | `MEDIDOR_API_KEY` | ✅ | — | Scope `admin`, label `core-admin-financiera` |
 | `HUB_BASE_URL` | ✅ | — | `https://hub.inovaweb.com.mx` |
 | `HUB_API_KEY` | ✅ | — | Scope `*` |
+| `HUB_GATEWAY` | — | `mock` | Pasarela default que el CAF pide al Hub en recargas. `mock` = sandbox interno; prod = `conekta` u otra real |
+| `HUB_ADMIN_KEY` | — | — | Llave admin del Hub (scope `admin:gateways`) para configurar las credenciales de pasarela de un tenant desde el panel del CAF (`/admin/payment-gateways`; el Hub las cifra) |
+| `HUB_COMPANY_ID` | — | `b5237689-…dc0c7` | UUID del tenant del Hub que administra el CAF (Inovaweb) |
 | `HUB_WEBHOOK_SECRET` | ✅ (prod) | — | Secreto HMAC dedicado del webhook del Hub. Obligatorio en prod (fail-fast); en dev cae a `HUB_API_KEY` |
 | `HUB_WEBHOOK_TOLERANCE_SEC` | — | `300` | Ventana anti-replay del timestamp firmado |
 | `MAX_RECARGA_CENTS` | — | `50000000` | Tope superior de recarga autoservicio (centavos) |
@@ -129,8 +174,9 @@ falla al arrancar (`pydantic-settings` con `Field(...)`).
 | `CER_PATH` | ✅ | `/secrets/csd.cer` | Certificado de Sello Digital |
 | `KEY_PATH` | ✅ | `/secrets/csd.key` | Llave privada del CSD |
 | `KEY_PASSWORD` | ✅ | — | Contraseña del CSD |
-| `SCRAPING_ADMIN_KEY` | ✅ | — | Bearer de la app **LiaForge/Scraping** para los endpoints app-facing (`_verify_app_key`) |
-| `SWIGG_ADMIN_KEY` | — | — | Bearer de la app **Swigg** (2ª app consumidora). Una app nueva = una llave nueva aquí + append en `_verify_app_key` |
+| `SCRAPING_BASE_URL` | — | `https://scraping.inovaweb.com.mx` | Base URL de la app LiaForge/Scraping (link wallet+cliente en el alta) |
+| `SCRAPING_ADMIN_KEY` | ✅ | — | Bearer **legacy** de la app **LiaForge/Scraping** para endpoints app-facing (`_verify_app_key`). Vía nueva = API key self-service por organización (`/api/v2/orgs/{id}/api-keys`) |
+| `SWIGG_ADMIN_KEY` | — | — | Bearer **legacy** de la app **Swigg** (2ª app consumidora). Modelo viejo: una app = una llave en `.env`; el motor multi-tenant lo sustituye por API keys self-service |
 | `HTTP_TIMEOUT_SEC` | — | `10.0` | Timeout default cores+PAC |
 | `HTTP_RETRIES` | — | `3` | — |
 
@@ -223,13 +269,35 @@ puertos `8000-8005` están ocupados por los cores Nivel 1 y n8n.
 - `GET /login`, `POST /login`, `POST /logout`
 - `GET /signup-request`, `POST /signup-request`
 
-### 6.2 Admin (UI HTMX, requiere JWT con rol interno)
-- `GET /admin/dashboard` — ingresos consolidados
-- `GET /admin/clients` · `POST /admin/clients` · `PATCH /admin/clients/{id}`
-- `POST /admin/clients/{id}/suspend`
-- `GET /admin/catalog/{products|services|plans|promotions}`
-- `GET /admin/billing/invoices` · `POST /admin/billing/run-closing`
-- `GET /admin/audit-log`
+### 6.2 Admin (`/admin/*`, requiere JWT con rol interno)
+
+Bloques de administración delegados sobre el motor multi-tenant (todos filtran
+por `organization_id`):
+
+- **Clientes:** `GET/POST /admin/clients`, `PATCH /admin/clients/{id}`,
+  `POST /admin/clients/{id}/{suspend|reactivate|cancel}`
+- **Catálogo (CRUD):** `/admin/catalog/{products|services|plans|promotions}`
+- **Usuarios:** `/admin/users/*`
+- **Reportes:** `/admin/reports/*`
+- **Seguridad:** `/admin/security/*`
+- **Pasarelas de pago:** `/admin/payment-gateways` (config + default; el Hub
+  cifra las credenciales del tenant)
+- **Proveedores de email:** `/admin/email-providers/*`
+- **Billing / audit:** `GET /admin/billing/invoices`,
+  `POST /admin/billing/run-closing`, `GET /admin/audit-log`
+
+### 6.2.b Organizaciones (`/api/v2/orgs`, JWT `super_admin`)
+
+Motor multi-tenant — dos planos:
+
+- **Plataforma:** `POST /api/v2/orgs` (alta org + owner), `GET /api/v2/orgs`
+  (consumo agregado), `PATCH /api/v2/orgs/{id}`,
+  `POST /api/v2/orgs/{id}/{suspend|reactivate|cancel}`,
+  `GET /api/v2/orgs/{id}/saas-account` + `POST /api/v2/orgs/saas/run-monthly-billing`
+  (meta-cobro del SaaS)
+- **Organización (self-service):** `POST /api/v2/orgs/{id}/api-keys` (acuña),
+  `GET /api/v2/orgs/{id}/api-keys` (lista enmascarada),
+  `POST /api/v2/api-keys/{key_id}/revoke`
 
 ### 6.3 Portal cliente (UI HTMX, requiere JWT con rol cliente)
 - `GET /portal/dashboard` — saldo + consumo
@@ -247,7 +315,7 @@ puertos `8000-8005` están ocupados por los cores Nivel 1 y n8n.
 - `POST /api/v2/billing/run-closing` — trigger manual de cierre
 
 #### App-facing (autenticados por **Bearer** de app, no JWT — `_verify_app_key`)
-- `POST /api/v2/apps/onboard` — alta self-service (cliente + wallet + plan; sin JWT/fiscales). Ver ADR-017.
+- `POST /api/v2/apps/onboard` — alta self-service (cliente + wallet + plan; sin JWT/fiscales). Acepta `promo_code` opcional (código de distribuidor que aplica % de crédito al contratar). Ver ADR-017.
 - `POST /api/v2/clients/{id}/charge` — cobro pay-per-use: tarifica `services.unit_price_cents`, debita
   `prepaid_ledger`, **402 `saldo_insuficiente`** si no alcanza. Idempotente + advisory lock. Ver ADR-016.
 - `GET /api/v2/clients/{id}/prepaid-balance` — saldo prepago **nativo del CAF** (`v_client_balance`).
@@ -279,7 +347,11 @@ puertos `8000-8005` están ocupados por los cores Nivel 1 y n8n.
   queda registrada en `audit_log`. No emite 4 API keys por cliente: los
   cores son multi-tenant resueltos por la llave admin master del CAF.
 - **Argon2id** para passwords. JWT en cookie httpOnly, SameSite=Strict,
-  access 15 min + refresh 30 días con rotación.
+  access según `JWT_ACCESS_TTL_MIN` (prod = 720 min / 12 h) + refresh 30 días
+  con rotación.
+- **Multi-tenancy:** todo recurso lleva `organization_id`; cada consulta lo
+  filtra. La org 1 (plataforma) es intocable (no se suspende ni cancela). API
+  keys de organización se guardan solo por hash SHA-256.
 - **Cobro prepago en el piloto:** el cliente recarga su wallet en el Medidor
   y el consumo se debita en vivo (ADR-010). La cobranza mensual pospago +
   **CFDI 4.0** vía PAC quedan diferidas hasta seleccionar PAC (el código de

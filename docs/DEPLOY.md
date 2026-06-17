@@ -373,3 +373,109 @@ La capa saldo-B usa `migrations/030_prepaid_ledger.sql` (`prepaid_ledger` + `v_c
 con la regla §4 (PowerShell `Get-Content | ssh`, nunca `<`). Sembrar `plans`/`services` de cada app es
 **additive** (ver RUNBOOK §10.3). Backend que toca código: `docker compose up -d --build admin_financiera`.
 
+---
+
+## 11. Multi-tenancy + SaaS Billing Engine (sesión 2026-06-16)
+
+Sesión que convirtió el CAF en **motor de medición y cobro multi-organización (multi-tenant)**
+con tarifa propia del SaaS, proveedores de correo por org/cliente, enlace org→cliente para el
+meta-cobro, distribuidores con cupones de descuento, cron de cierre mensual del SaaS y nuevas
+variables de entorno (Hub admin + AES real + TTL de sesión).
+
+### 11.1 Migraciones nuevas (031 → 036) — orden estricto
+
+Aplicar **en este orden** tras `030`. Todas son **additivas, idempotentes y transaccionales**
+(envueltas en `BEGIN; … COMMIT;`). Aplicación por **psql directo, NO alembic**.
+
+| # | Archivo | Qué hace |
+|---|---------|----------|
+| 031 | `031_organizations_tenancy.sql` | F0 de tenancy. Crea tabla `organizations` (id, slug único, name, status active/suspended/cancelled) y siembra **org #1 = Inovaweb**. Agrega columna `organization_id BIGINT NOT NULL DEFAULT 1` + índice + FK a `organizations(id)` a 13 tablas de primer nivel (`clients, users, services, plans, products, promotions, api_keys, subscriptions, invoices, payments, adjustments, price_catalog, prepaid_ledger`). El `DEFAULT 1` evita romper el código vivo que aún no conoce la columna; se retira en F1 cuando el código setee `organization_id` del contexto. NO toca lógica de cobro. |
+| 032 | `032_catalog_unique_por_org.sql` | Cataloga multi-tenant: cambia el UNIQUE de `code` de **global a por organización** en `services`, `plans`, `products`, `promotions` (`DROP CONSTRAINT *_code_key` → `ADD CONSTRAINT *_org_code_key UNIQUE (organization_id, code)`). Permite que cada org reutilice sus propios `code`. Seguro: ninguna FK referencia por `code` (todas por id); los codes actuales viven en org 1 → siguen únicos dentro de ella. |
+| 033 | `033_email_providers.sql` | Crea tabla canónica `email_providers`: config de envío de email por org (`client_id` NULL) o por cliente específico (`client_id` con valor). Soporta `microsoft`, `gmail`, `smtp`. El secreto (api_key/app_password/refresh_token/client_secret) viaja SIEMPRE cifrado en `secret_encrypted` vía `app.core.crypto.encrypt_secret`, NUNCA en claro. Solo CREATE TABLE + 2 índices (org, client); sin seeds. **Requiere `AES_KEY` real** (ver §11.2). |
+| 034 | `034_seed_saas_tariff.sql` | Seed (idempotente, `ON CONFLICT … DO UPDATE`) de la **tarifa del propio SaaS del CAF** en la org plataforma (organization_id=1). Modelo híbrido: servicio `saas_transaccion` = $0.99 (99¢) por transacción facturable + plan `caf_saas` = $99/mes (9900¢, app_slug `caf`). Ajustar montos aquí (centavos BIGINT) si cambia el precio. |
+| 035 | `035_org_platform_client.sql` | Agrega `organizations.platform_client_id` (FK nullable a `clients(id)`) + índice. Liga cada organización con su fila "cliente" dentro de la org plataforma (org 1): vehículo del **meta-cobro** del SaaS (la plataforma factura a cada org como un cliente más dentro de la org 1). Nullable a propósito: orgs sin cliente plataforma quedan en NULL. Solo ADD COLUMN IF NOT EXISTS + índice. |
+| 036 | `036_distributors.sql` | Crea tabla `distributors` (id, organization_id DEFAULT 1 + FK, name, external_ref futuro, is_active) + índice; y agrega `promotions.distributor_id` (FK a `distributors(id)`) + índice. Cada código de promoción se asocia a un distribuidor; el código lleva descuento en % (`promotions.discount_pct`) que se aplica al contratar (self-service). Por ahora del distribuidor solo se da de alta el nombre. |
+
+**Comando de aplicación** (psql directo dentro del contenedor, parar al primer error):
+```bash
+docker compose exec -T postgres psql -U caf -d admin_financiera -v ON_ERROR_STOP=1 < 0NN_*.sql
+```
+
+**Regla crítica desde PowerShell (Windows del operador)** — usar `Get-Content | ssh`, **NUNCA el
+operador `<`** (ver §4.1):
+```powershell
+# backup ANTES de migrar
+ssh root@89.116.25.222 "docker compose -f /opt/inovaweb-admin-financiera/docker-compose.yml exec -T postgres pg_dump -U caf -d admin_financiera | gzip > /backups/caf-pre-031-036-$(date +%Y%m%d-%H%M%S).sql.gz"
+
+# aplicar 031 -> 036 en orden
+foreach ($f in @(
+  "031_organizations_tenancy.sql","032_catalog_unique_por_org.sql","033_email_providers.sql",
+  "034_seed_saas_tariff.sql","035_org_platform_client.sql","036_distributors.sql"
+)) {
+  Get-Content $f `
+    | ssh root@89.116.25.222 "docker compose -f /opt/inovaweb-admin-financiera/docker-compose.yml exec -T postgres psql -U caf -d admin_financiera -v ON_ERROR_STOP=1"
+  Write-Host "$f OK"
+}
+```
+(El `docker compose exec -T postgres` lee el .sql de stdin; el `-f .../docker-compose.yml` se necesita
+porque el `ssh` no entra al directorio del proyecto.)
+
+### 11.2 Variables de entorno NUEVAS en el `.env` del VPS (NO en git)
+
+Agregar al `.env` de `/opt/inovaweb-admin-financiera` (los secretos viven SOLO en el VPS, nunca en
+git ni en CLAUDE.md):
+
+| Variable | Valor / cómo obtener | Para qué |
+|---|---|---|
+| `HUB_ADMIN_KEY` | Llave admin del Hub con scope `admin:gateways` | Que el CAF **configure pasarelas de pago** en el Hub (distinta de `HUB_API_KEY`, que es payments:write) |
+| `HUB_COMPANY_ID` | `b5237689-...` (tenant del CAF dentro del Hub) | Identifica el tenant/empresa del CAF en el Hub al administrar pasarelas |
+| `AES_KEY` | **base64 de 32 bytes REAL** (no placeholder). Generar con `openssl rand -base64 32` | Cifrado AES de secretos; el **feature de email (`email_providers`, mig 033) la requiere** para `encrypt_secret`. Un placeholder rompe encrypt/decrypt |
+| `JWT_ACCESS_TTL_MIN` | `720` | TTL del access token = **sesión de 12 horas** |
+
+Generar `AES_KEY`:
+```bash
+openssl rand -base64 32
+```
+
+Tras cambiar el `.env`, **recrear el contenedor** (no basta restart) para que tome las nuevas variables:
+```bash
+docker compose up -d admin_financiera
+```
+
+### 11.3 Cron nuevo — cierre mensual del SaaS
+
+Agregar al crontab del VPS (junto a los workers del RUNBOOK §3.4) el script de cierre mensual del SaaS:
+```cron
+0 6 1 * *  /opt/inovaweb-admin-financiera/scripts/run_saas_monthly_billing.sh
+```
+Corre **a las 06:00 del día 1 de cada mes**: cierre/facturación mensual del SaaS (servicio
+`saas_transaccion` + plan `caf_saas` sembrados en mig 034).
+
+### 11.4 Deploy de backend (recordatorio)
+
+Sin cambios respecto a §3: el deploy de backend sigue siendo
+```bash
+docker compose up -d --build admin_financiera
+```
+Y todo deploy = **scp/edit al VPS Y commit+push** a GitHub (remoto alias `github-caf`, llave
+`/root/.ssh/id_ed25519`; ver §10.1). El repo del VPS es la fuente de verdad.
+
+### 11.5 Checklist post-deploy (sesión 2026-06-16)
+
+Además del checklist §3.2, verificar:
+
+- [ ] `/health` y `/health/db` 200 (`curl -fsS http://localhost:8006/health`)
+- [ ] Migraciones **031–036 aplicadas**: tablas `organizations`, `email_providers`, `distributors` existen; `organization_id` presente en las 13 tablas; constraints `*_org_code_key` activos; `organizations.platform_client_id` y `promotions.distributor_id` existen
+      ```bash
+      docker compose exec -T postgres psql -U caf -d admin_financiera -c "\dt" | grep -E "organizations|email_providers|distributors"
+      docker compose exec -T postgres psql -U caf -d admin_financiera -c "SELECT code FROM services WHERE code='saas_transaccion'; SELECT code FROM plans WHERE code='caf_saas';"
+      ```
+- [ ] `/admin/payment-gateways` carga (configuración de pasarelas vía Hub; requiere `HUB_ADMIN_KEY` + `HUB_COMPANY_ID`)
+- [ ] `/api/v2/orgs` responde con **JWT de plataforma** (capa multi-tenant viva)
+- [ ] **Crypto round-trip OK** (`AES_KEY` real): encrypt → decrypt dentro del contenedor devuelve el texto original
+      ```bash
+      docker compose exec -T admin_financiera python -c "from app.core.crypto import encrypt_secret, decrypt_secret; assert decrypt_secret(encrypt_secret('ok')) == 'ok'; print('crypto round-trip OK')"
+      ```
+- [ ] `JWT_ACCESS_TTL_MIN=720` tomado (sesión de 12h; el contenedor fue **recreado**, no solo reiniciado)
+- [ ] Cron `run_saas_monthly_billing.sh` presente en `crontab -l` (`0 6 1 * *`)
+

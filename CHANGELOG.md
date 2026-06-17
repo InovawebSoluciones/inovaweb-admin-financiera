@@ -7,6 +7,101 @@ Orden cronológico inverso: lo más reciente primero.
 
 ---
 
+## [0.7.0] — 2026-06-16 — Motor SaaS multi-tenant + administración delegada + pasarelas/promos
+
+> Sesión 2026-06-16 (desde `af0e078`). El CAF deja de ser mono-tenant de Inovaweb y pasa a ser
+> un **motor SaaS multi-organización**: cada organización es un tenant aislado por `organization_id`,
+> con su propio catálogo, llaves, consumo y administración delegada. La org 1 (Inovaweb) es a la vez
+> la **organización plataforma** (su `super_admin` ve todo) y cobra a las demás orgs por usar el motor
+> (meta-cobro SaaS). Se incorporan administración delegada por org, front de pasarelas vía el Hub,
+> y un sistema de distribuidores con códigos de promoción.
+
+### Agregado
+- **Migraciones de tenancy y catálogo:**
+  - `031_organizations_tenancy.sql` — tabla `organizations` (slug UNIQUE, status active/suspended/cancelled)
+    + columna `organization_id BIGINT NOT NULL DEFAULT 1` (FK + índice) en **13 tablas** de primer nivel:
+    `clients, users, services, plans, products, promotions, api_keys, subscriptions, invoices, payments,
+    adjustments, price_catalog, prepaid_ledger`. El `DEFAULT 1` (org Inovaweb) es **red de seguridad**
+    para no romper el código vivo que aún no conoce la columna; se retira al setear la org del contexto.
+  - `032_catalog_unique_por_org.sql` — la unicidad de `code` deja de ser global y pasa a ser por
+    organización: UNIQUE `(organization_id, code)` en `services`, `plans`, `products`, `promotions`.
+    Permite que dos orgs reutilicen el mismo `code`.
+  - `033_email_providers.sql` — tabla `email_providers` (proveedor de correo por org, o por cliente si
+    `client_id` no es NULL). Soporta `microsoft`, `gmail`, `smtp`. El secreto viaja **cifrado AES-256-GCM**
+    en `secret_encrypted` (nunca en claro), vía `app.core.crypto`.
+  - `034_seed_saas_tariff.sql` — seed de la tarifa del propio SaaS en el catálogo de la org plataforma (1):
+    plan `caf_saas` ($99/mes = 9900¢) + servicio `saas_transaccion` ($0.99 = 99¢ por transacción facturable).
+  - `035_org_platform_client.sql` — `organizations.platform_client_id` (liga cada org a su cliente dentro
+    de la org plataforma, para el meta-cobro SaaS).
+  - `036_distributors.sql` — tabla `distributors` (nombre + `external_ref` opcional) + columna
+    `promotions.distributor_id`. Cada código de promoción se asocia a un distribuidor.
+- **Motor SaaS multi-tenant (`app/core/tenancy.py`):**
+  - `resolve_app_org(request, db)` — resuelve la organización dueña de la petición app-facing por el
+    hash SHA-256 de la API key en `api_keys` (no revocada), con fallback a llaves legacy del `.env`
+    (`SCRAPING_ADMIN_KEY`/`SWIGG_ADMIN_KEY` → org 1). El tenant se resuelve SIEMPRE de la llave, nunca del body.
+  - `assert_client_in_org(db, client_id, org_id)` — control de aislamiento central: 404 si el cliente
+    no pertenece a la org (impide que la org A opere sobre clientes de la org B).
+  - JWT con claim `oid` (organization_id); `CurrentUser` incorpora `organization_id` + `is_platform`
+    (el `super_admin` de la org 1 = operador de plataforma, ve todo).
+  - `api_router` app-facing aislado por org; listados admin con `_org_scope`.
+- **`orgs_router`** — gestión de organizaciones: `POST`/`GET /api/v2/orgs`; acuñar/listar/revocar API keys
+  self-service en `/orgs/{id}/api-keys` (hash en BD); `/orgs/{id}/consumo`; `/orgs/{id}/saas-account`;
+  `POST /orgs/saas/run-monthly-billing`.
+- **Bloques de administración delegada por org** (super tenant accede vía `?org`):
+  - `users_router` — `/admin/users`.
+  - `adjustments_router` — `/admin/clients/{id}/adjust` (append-only).
+  - `org_admin_router` — `/api/v2/orgs/{id}` (patch/suspend/reactivate/cancel/detalle + gateway-default).
+  - `reports_router` — `/admin/reports` (low-balance / top-consumo / consumo.csv).
+  - `catalog_services_router`, `catalog_plans_router`, `catalog_promos_router` — `/admin/catalog` CRUD.
+  - `catalog_read_router` — `/api/v2/catalog`.
+  - `client_account_router` — `/admin/clients/{id}/balance|ledger`.
+  - `security_router` — `/admin/security` (api-keys / logins / rotate).
+  - `email_providers_router` — `/admin/email-providers`.
+- **`app/core/crypto.py`** — cifrado AES-256-GCM para secretos sensibles (proveedores de correo,
+  credenciales de pasarela).
+- **`app/services/saas_billing.py`** — meta-cobro SaaS: cada org es cliente de la org plataforma (1);
+  acumula $0.99/transacción tras cada cargo (post-charge), cuota mensual de $99, `get_saas_account`.
+  Cron en `scripts/run_saas_monthly_billing.sh`.
+- **`app/services/emailer.py`** — envío de correo por el proveedor configurado de la org
+  (Microsoft / Gmail / SMTP). El onboarding usa `emailer` para el correo de activación.
+- **Front de pasarelas de pago:**
+  - `hub_client.HubAdminClient` (autenticado con `HUB_ADMIN_KEY`).
+  - Admin `/admin/payment-gateways` — guardar credenciales cifradas en el Hub + selector de pasarela activa.
+  - Prepago resuelve la pasarela = default del Hub (fail-safe `HUB_GATEWAY`).
+  - Settings nuevos: `HUB_ADMIN_KEY`, `HUB_COMPANY_ID`.
+- **Distribuidores + códigos de promoción:** alta de distribuidor (nombre) + creación de código
+  (% en `promotions.discount_pct`, `kind=referral`, `distributor_id`). `apps/onboard` acepta `promo_code` →
+  valida + aplica el % como bono de crédito sobre el grant inicial + cuenta el uso (idempotente).
+- **Dashboard cableado:** "Ingreso del mes" = consumo real; "Consumo por core" por `source_core`.
+  Columna "Servicio/Producto" en Planes.
+
+### Cambiado
+- El catálogo de `services`/`plans`/`products`/`promotions` deja de ser global y pasa a ser **por organización**
+  (clave compuesta `organization_id, code`). [TODO: completar] el detalle de migración de datos existentes si lo hubo.
+- La autenticación app-facing resuelve la organización por API key (hash en `api_keys`), con fallback legacy
+  a `.env` → org 1 para no romper LiaForge/Swigg.
+- `app/services/onboarding.py` — usa `emailer` (proveedor configurado por org) para el correo de activación,
+  en lugar del envío anterior vía Centro de Mensajes. [TODO: completar] confirmar si se conserva el fallback al Centro.
+
+### Corregido
+- **`AmbiguousParameter`** en `/admin/clients` y `/admin/audit-log` — resuelto con CAST explícito de los
+  parámetros opcionales en las consultas.
+- **Favicon** corregido (servía 404 / icono roto). [TODO: completar] detalle exacto del fix.
+
+### Seguridad
+- **AES-256-GCM real:** `AES_KEY` del `.env` fijada con clave real (antes era un placeholder) — habilita el
+  cifrado efectivo de secretos de proveedores de correo y de pasarela.
+- **Aislamiento multi-tenant:** `assert_client_in_org` + scoping por `organization_id` en todos los listados y
+  endpoints app-facing impiden cross-tenant (la org A no puede leer/operar datos de la org B). El tenant se
+  resuelve de la llave, nunca del body.
+- **API keys self-service con hash en BD** (`api_keys`, SHA-256, revocables) — sustituyen el uso exclusivo de
+  llaves de `.env`.
+- `JWT_ACCESS_TTL_MIN` ampliado de 15 → 720 (sesión de panel de 12 h). [TODO: completar] valorar impacto en
+  superficie de tokens robados.
+- **401 del panel → redirige a `/login`** (antes devolvía JSON crudo) + página `error.html` para errores del panel.
+
+---
+
 ## [0.6.1] — 2026-06-14 — Reconciliación VPS↔GitHub + push habilitado + documentación formal
 
 > Sin cambios de código de negocio. Higiene de repositorio + documentación (skill `inovaweb-documentacion`).

@@ -106,3 +106,144 @@ Ninguna (sin ❌).
 5. CR-1/CR-2 de billing (timestamp ISO con hora; división entera de `unit_price`) — diferidas a CFDI/sprint 4.
 
 *Auditoría OWASP — traslada 2026-06-14, commit `af0e078`.*
+
+---
+---
+
+# ADDENDUM 2026-06-16 — Auditoría del código nuevo (CAF Billing Engine SaaS multi-org)
+
+**Fecha:** 2026-06-16
+**Alcance:** código NUEVO/cambiado de la sesión que convierte el CAF en un motor
+de facturación **multi-organización (SaaS)**:
+`app/core/tenancy.py`, `app/core/crypto.py`, `app/services/saas_billing.py`,
+`app/services/emailer.py`, `app/core/clients/hub_client.py`, `app/services/prepago.py`,
+`app/services/onboarding.py`, `app/main.py` y los routers
+`orgs_router`, `org_admin_router`, `users_router`, `adjustments_router`,
+`reports_router`, `catalog_services_router`, `catalog_plans_router`,
+`catalog_promos_router`, `catalog_read_router`, `client_account_router`,
+`security_router`, `email_providers_router`, `admin_router`, `api_router`.
+Migraciones revisadas: `031`–`036` (tenancy, unique-por-org, email_providers,
+seed SaaS, platform_client, distributors).
+
+**Método:** lectura directa de cada archivo; barrido de f-strings en SQL,
+`|safe`/`innerHTML` en templates, literales de secreto en `app/`, y verificación
+del aislamiento por `organization_id` y de la idempotencia en escrituras de dinero.
+
+**Nota de entorno:** `caf-work` es copia de trabajo, NO repositorio git, y NO
+contiene `.env`/`.gitignore`/`.cer`/`.key`. La verificación de `.env` gitignored
+y `AES_KEY` fuera de git se hace en el repo canónico del VPS
+`/opt/inovaweb-admin-financiera` (regla del proyecto: secretos solo en `.env` del
+VPS). `[TODO: completar]` reconfirmar en el VPS antes del push.
+
+## Veredicto del addendum: **PASS CON OBSERVACIONES** — sin bloqueo de commit
+
+No se hallaron ❌ FALLO en el código nuevo. El nuevo plano multi-tenant resuelve
+el `organization_id` SIEMPRE del portador (API key vía `resolve_app_org`, o JWT
+vía `CurrentUser.organization_id`/`is_platform`), NUNCA del body. Las escrituras
+de dinero conservan idempotencia y append-only. Las observaciones son la deuda
+heredada (CSRF, `revoked_tokens`) más cuatro puntos menores nuevos (abajo).
+
+---
+
+## Resumen (6 categorías)
+
+| # | Categoría | Estado | Síntesis |
+|---|---|---|---|
+| 1 | SQL Injection | ✅ PASS | Todo `text()` con binds. Los f-strings de `_org_scope`/`_org_filter`/`_detail_where`/`{oc}` interpolan SOLO nombres de columna y fragmentos `AND col = :_org` literales; el valor de la org va parametrizado (`:_org`). Ningún input de usuario se concatena. |
+| 2 | XSS | ✅ PASS | Jinja2 autoescape; sin `\|safe` con dato de usuario. Único `innerHTML` es `hx-swap="innerHTML"` (atributo HTMX, no sink). `emailer._hdr` además sanea CR/LF (anti header-injection). |
+| 3 | CSRF | ⚠️ REVISAR | Sin cambio: panel por cookie JWT `SameSite=Strict` (mitiga); app-facing por Bearer (exento). Sin token CSRF explícito en forms `/admin/*` (deuda heredada). |
+| 4 | Secretos hardcodeados | ✅ PASS | 0 literales de secreto en `app/`. Credenciales de email cifradas AES-256-GCM (`crypto.py`); las de pasarela las cifra el Hub. API keys solo por hash SHA-256. Lecturas exponen solo `secret_set`/llaves enmascaradas, nunca el secreto. Verif. `AES_KEY`/`.env` fuera de git → en VPS `[TODO: completar]`. |
+| 5 | Gestión de sesiones | ⚠️ REVISAR | JWT httpOnly/Secure/SameSite=Strict; access TTL ampliado a 720 min (12 h) vía `.env` del VPS + refresh 30 d; lockout 5 intentos/15 min. Sin `revoked_tokens`: logout no invalida en servidor (deuda heredada, agravada por TTL más largo). |
+| 6 | Endpoints sin auth | ✅ PASS | Todos los nuevos exigen `require_roles(...)` (panel/JSON) o `resolve_app_org` (app-facing Bearer). Aislamiento por `organization_id` del portador; `?org` solo lo respeta el super tenant (`is_platform`). Públicos sin cambio. |
+
+### Extra (invariantes financieros)
+
+| Invariante | Estado | Evidencia |
+|---|---|---|
+| Idempotencia en escrituras de dinero | ✅ PASS | `charge`/`adjust`/`accrue`/`saas-fee`/`grant`/`recarga_hub` usan `idempotency_key` + `ON CONFLICT (client_id, idempotency_key) ... DO NOTHING` o pre-check con `advisory_xact_lock`. |
+| Append-only `prepaid_ledger` | ✅ PASS | Correcciones = asiento NUEVO (`adjustments_router`, `source='ajuste_manual'`); jamás UPDATE/DELETE de asientos. |
+| Meta-cobro NO recursivo | ✅ PASS | `accrue_transaction` retorna temprano si `org_id == PLATFORM_ORG_ID` (`saas_billing.py:126`); `run_saas_monthly_billing` excluye `o.id <> :porg`. |
+| `promo_code` valida tenant + no agotado + reintento no re-cuenta | ✅ PASS | `api_router.py:461-480`: filtra `organization_id=:org`, vigencia y `is_active`; `UPDATE ... WHERE uses_count < max_uses RETURNING` cuenta atómico; el grant lleva `grant_key` idempotente → reintento no re-aplica bono. |
+
+---
+
+## Detalle de hallazgos (⚠️)
+
+### ⚠️ H-A (heredada) — CSRF sin token explícito en formularios `/admin/*`
+Sin cambio respecto a 2026-06-14. Mitigado por cookies `SameSite=Strict`; los
+forms del panel (`admin_router`: crear cliente, suspender, pasarelas, promos)
+mutan por cookie. Deuda: token CSRF si alguna vez se relaja `SameSite`.
+
+### ⚠️ H-B (heredada, agravada) — `revoked_tokens` no implementada + TTL 720 min
+`jwt_auth.py` no consulta denylist: el logout (`clear_auth_cookies`) borra la
+cookie del navegador pero el JWT sigue válido en servidor hasta `exp`. Con el
+access TTL ampliado de 15 → **720 min (12 h)** (CHANGELOG; `config.py:36` aún
+trae el default 15, el valor real vive en `.env` del VPS), la ventana de un token
+filtrado/robado pasa de 15 min a 12 h. Recomendación: implementar denylist de
+`jti` en logout, o reducir el access TTL y apoyarse en el refresh con rotación.
+
+### ⚠️ H-C (nueva, menor) — onboard app-facing atribuye la auditoría a `actor_user_id=1`
+`api_router.api_app_onboard` (`api_router.py:430`) invoca
+`onboard_client(..., actor_user_id=1, actor_ip=None, ...)`. El alta self-service
+por Bearer queda auditada como si la ejecutara el usuario 1 (operador
+plataforma), no la organización/app dueña de la API key. No es escalación de
+privilegio (la org sí se aísla vía `resolve_app_org`→`payload.organization_id`),
+pero contamina la trazabilidad del `audit_log`. Recomendación: registrar el
+`api_key.id`/`organization_id` portador como actor (o un actor de sistema
+distinto de un humano real) en el audit del onboard app-facing.
+
+### ⚠️ H-D (nueva, robustez — NO seguridad) — correlación webhook vs. `metadata` no enviada al Hub
+`hub_client.HubClient.charge` documenta y NO envía `metadata` en el POST
+`/hub/v1/charge` (`hub_client.py:50-71`); confía en que el Hub resuelva `purpose`
+por defecto. Pero `prepago._correlate_or_reject` (`prepago.py:572`) RECHAZA el
+pago si `metadata.purpose` del webhook no coincide con el `purpose` del intento
+`recharge.initiated`. Si el Hub no eco-devuelve `metadata.purpose` en el webhook,
+un `plan_purchase` legítimo podría rechazarse (no acreditar). Es un riesgo de
+DISPONIBILIDAD/correctitud del flujo de recarga, no de seguridad (falla-cerrado:
+nunca acredita de más). `[TODO: completar]` validar contra el contrato real del
+webhook del Hub que `metadata.purpose` viaja de vuelta; si no, derivar el
+`purpose` esperado de otra señal del intento.
+
+### ⚠️ H-E (nueva, observación de aislamiento — aceptable por diseño)
+En `api_router` los endpoints app-facing de **lectura** `GET /services`,
+`/clients/{id}/prepaid-balance`, `/clients/{id}/ledger`, `/plan-limits` resuelven
+la org por `resolve_app_org` y aplican `assert_client_in_org` correctamente. El
+`prepaid-balance`/`ledger` NO filtran las filas del ledger por `organization_id`
+en el SELECT, pero el `client_id` ya está atado a la org por `assert_client_in_org`
+previo, por lo que NO hay fuga cross-tenant. Se deja anotado por si en el futuro
+un cliente pudiera pertenecer a más de una org (hoy no). Sin acción requerida.
+
+---
+
+## Confirmaciones positivas relevantes (código nuevo)
+
+- **`tenancy.resolve_app_org`**: hash SHA-256 de la API key contra `api_keys`
+  (no revocada) → `organization_id`; fallback legacy SOLO a llaves de `.env`
+  (SCRAPING/SWIGG) → org 1. 401 si no resuelve. El tenant nunca sale del body.
+- **`crypto.py`**: AES-256-GCM con nonce aleatorio de 12 B por cifrado, AAD que
+  liga la versión (anti-downgrade), valida llave de 32 B (fail-fast), descifrado
+  con verificación de tag (`InvalidTag`→`ValueError`). Correcto.
+- **`security_router`/`email_providers_router`**: nunca devuelven `key_hash` ni
+  `secret_encrypted`; rotación de key revoca+acuña y muestra el plano UNA vez; el
+  `test`/`emailer` solo exponen el TIPO de excepción, jamás el secreto.
+- **`adjustments_router`**: append-only + `advisory_xact_lock` + idempotencia +
+  402 por saldo insuficiente en débitos; el `organization_id` destino se valida
+  contra el cliente.
+- **`org_admin_router`**: suspender/cancelar la org plataforma (id 1) bloqueado
+  (400); todas las rutas exigen `_platform_only` (`is_platform`).
+- **`main.HostEnforcementMiddleware`**: `/admin/*` y `/portal/*` acotados a su
+  dominio en prod; error handler devuelve JSON a API/webhooks y HTML solo al panel.
+
+## Acciones requeridas antes del push
+Ninguna (sin ❌). Recomendadas (no bloqueantes): H-C (actor real en onboard
+app-facing) y H-D (confirmar `metadata.purpose` del webhook del Hub).
+
+## Deuda técnica documentada (no bloqueante) — actualización
+1. `revoked_tokens` / denylist (TASK-22) — **prioridad sube** por TTL 720 min.
+2. Token CSRF explícito en `/admin/*` — heredada.
+3. Atar el Bearer a `client_id`/`plan_code` permitidos si crece el nº de apps (ADR-017).
+4. Atribuir el actor real (api_key/org) en el onboard app-facing (H-C).
+5. Reconfirmar en el VPS: `AES_KEY`, `JWT_SECRET` y `.env` fuera de git; `JWT_ACCESS_TTL_MIN`
+   real = 720 (el default de `config.py` sigue en 15).
+
+*Addendum OWASP — auditoría de código nuevo 2026-06-16 (multi-org SaaS). Sin commit ni deploy.*

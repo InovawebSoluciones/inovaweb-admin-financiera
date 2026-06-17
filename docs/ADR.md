@@ -716,6 +716,382 @@ fila: los clientes se distinguen por `plan_code` (prefijo por app: `liaforge_*`,
 
 ---
 
+## ADR-020: Multi-tenancy por `organization_id` (single-DB, scoping por query), no schema-por-tenant ni RLS
+
+**Fecha:** 2026-06-16
+**Estado:** Aprobado
+
+### Contexto
+El CAF deja de ser el motor de cobro de una sola empresa (Inovaweb) para
+convertirse en un **SaaS multi-organización**: varias empresas-cliente
+("organizations") usan el mismo motor de medición y cobro, cada una con su
+propio catálogo, sus clientes y su saldo, sin verse entre sí. Antes de esta
+sesión el código vivo no conocía el concepto de organización; todo era
+implícitamente de Inovaweb. Había que introducir el tenant sin romper el
+código en producción (LiaForge/Swigg ya cobrando) y decidir el modelo de
+aislamiento.
+
+### Decisión
+**Tenant lógico por columna `organization_id` en una sola base de datos**, con
+aislamiento aplicado a nivel de query en la app:
+
+- Migración `031_organizations_tenancy.sql`: tabla `organizations`
+  (`031_organizations_tenancy.sql:9`) + `organization_id BIGINT NOT NULL
+  DEFAULT 1` agregado a **13 tablas** de primer nivel (clients, users,
+  services, plans, products, promotions, api_keys, subscriptions, invoices,
+  payments, adjustments, price_catalog, prepaid_ledger —
+  `031_organizations_tenancy.sql:29-34`), cada una con índice por
+  `organization_id` y FK a `organizations(id)`. El `DEFAULT 1` (org Inovaweb)
+  es una **red de seguridad** para el código vivo que aún no setea la columna;
+  se retira cuando el código siempre la provea desde el contexto
+  (`031_organizations_tenancy.sql:2-5`).
+- El tenant se resuelve **SIEMPRE de la credencial, nunca del body** (regla
+  rectora 7):
+  - **App-facing (Bearer de app):** `app/core/tenancy.py:resolve_app_org`
+    (`app/core/tenancy.py:34`) busca el hash SHA-256 de la API key en
+    `api_keys` (no revocada) → su `organization_id`; con **fallback legacy**
+    a las llaves de `.env` (SCRAPING_ADMIN_KEY/SWIGG_ADMIN_KEY → org 1) para
+    no romper a LiaForge/Swigg durante la migración (`app/core/tenancy.py:57-66`).
+  - **Operador (JWT):** `CurrentUser` lleva `organization_id` (claim `oid`) y
+    `is_platform` (super_admin de la org 1 Inovaweb), que ve y opera sobre
+    **todas** las orgs vía `?org=<id>` (patrón repetido en
+    `catalog_*_router`, `adjustments_router`, `client_account_router`,
+    `email_providers_router`).
+- **Aislamiento por query:** todo SELECT/INSERT acota por `organization_id`, y
+  el cruce entre orgs se bloquea con `assert_client_in_org`
+  (`app/core/tenancy.py:69`), que devuelve 404 si el `client_id` no pertenece
+  a la org de la llave (impide que la org A opere sobre un cliente de la org B).
+
+### Alternativas consideradas
+- **Schema-por-tenant (un schema Postgres por organización):** descartado.
+  Multiplica DDL y migraciones por N tenants, complica los reportes
+  cross-org de la plataforma (`/orgs`, consumo agregado) y no aporta
+  aislamiento real frente a un bug de la app que ya tiene la conexión.
+- **Row-Level Security (RLS) de Postgres:** descartado por ahora. Habría que
+  fijar un `SET app.current_org` por transacción en una capa async con pool
+  compartido (frágil con SQLAlchemy async) y el beneficio sobre el scoping
+  explícito por query es marginal para el tamaño actual. Queda como
+  endurecimiento futuro si se quiere defensa en profundidad.
+
+### Consecuencias
+- ✅ Una sola BD, una sola imagen, un solo set de migraciones: el SaaS escala
+  agregando filas, no schemas.
+- ✅ El código vivo no se rompe: `DEFAULT 1` deja a Inovaweb funcionando
+  mientras el resto del código adopta `organization_id`.
+- ✅ El tenant nunca es spoofeable desde el cliente: sale de la llave (hash en
+  `api_keys`) o del JWT, jamás del body.
+- ⚠️ El aislamiento depende de que **cada query** filtre por
+  `organization_id`. Una consulta que lo olvide fuga datos cross-tenant.
+  Mitigación: helpers centralizados (`resolve_app_org`,
+  `assert_client_in_org`, `_org_scope`) y revisión de seguridad obligatoria
+  de cualquier router nuevo.
+- ⚠️ El `DEFAULT 1` es transitorio; mientras exista, una fila insertada sin
+  org explícita cae en Inovaweb por descuido. Se retira en cuanto el código
+  garantice la columna.
+
+---
+
+## ADR-021: API keys self-service por organización (hash en `api_keys`), reemplazan el hardcode de llaves en `.env`
+
+**Fecha:** 2026-06-16
+**Estado:** Aprobado
+
+### Contexto
+Hasta esta sesión, cada app consumidora se autenticaba con una llave **cableada
+en el `.env`** del CAF (`SCRAPING_ADMIN_KEY` = LiaForge, `SWIGG_ADMIN_KEY` =
+Swigg — ver ADR-017). Dar de alta una app nueva exigía editar `.env` y
+redesplegar, y todas las llaves vivían fuera de la BD, sin pertenencia a una
+organización. Con el SaaS multi-org (ADR-020) cada organización necesita acuñar
+y revocar sus propias llaves sin pasar por el operador ni por un deploy.
+
+### Decisión
+Cada organización **acuña sus propias API keys self-service** desde
+`orgs_router` (`app/routers/orgs_router.py`):
+
+- `POST /api/v2/orgs/{org_id}/api-keys` (`app/routers/orgs_router.py:181`):
+  genera una llave `cafk_<token>`, guarda **solo su hash SHA-256** en
+  `api_keys` (con `organization_id`, scope admin|readonly, `created_by_user_id`)
+  y devuelve el texto plano **una sola vez** (`orgs_router.py:200-207`). La
+  lectura (`GET .../api-keys`) jamás re-expone el plano.
+- `POST /api/v2/api-keys/{key_id}/revoke` (`orgs_router.py:226`): revocación
+  *soft* (marca `revoked_at`, nunca borra).
+- Permisos: un `super_admin` administra **solo su org**; el operador de
+  plataforma (`is_platform`) cualquiera (`_can_manage_org`,
+  `orgs_router.py:43`).
+- `resolve_app_org` (ADR-020) valida estas llaves por hash. El **fallback
+  legacy** a `SCRAPING_ADMIN_KEY`/`SWIGG_ADMIN_KEY` se conserva como puente
+  para LiaForge/Swigg, no como vía permanente.
+- Para que el catálogo sea por-org, la migración `032_catalog_unique_por_org.sql`
+  cambia el `UNIQUE(code)` global a **`UNIQUE(organization_id, code)`** en
+  services/plans/products/promotions (`032_catalog_unique_por_org.sql:9-23`):
+  dos orgs pueden tener su propio `code` 'email' sin colisión.
+
+### Alternativas consideradas
+- **Seguir con llaves en `.env`:** descartado. No escala (deploy por app
+  nueva), no pertenece a una org, y mezcla secretos de tenants distintos en
+  un solo archivo.
+- **Guardar la llave en claro o reversible en BD:** descartado. Solo se
+  persiste el hash; un dump de BD no revela llaves usables.
+- **`UNIQUE(code)` global con prefijo por app (`liaforge_*`):** era el apaño de
+  ADR-017; se reemplaza por `UNIQUE(organization_id, code)`, que es el modelo
+  correcto multi-tenant y libera los nombres de código por org.
+
+### Consecuencias
+- ✅ Alta de app/credencial **sin deploy ni edición de `.env`**: la org acuña
+  su llave por API.
+- ✅ Cada llave pertenece a una org y es auditable (creador, último uso,
+  revocación); revocar es inmediato y reversible-trazable (soft delete).
+- ✅ Catálogo realmente por-org: nombres de `code` libres entre tenants.
+- ⚠️ El texto plano se muestra **una sola vez**; si se pierde, hay que acuñar
+  otra. Es intencional (no se puede recuperar de un hash).
+- ⚠️ El fallback legacy sigue vivo: mientras LiaForge/Swigg no migren a llaves
+  de BD, esas dos llaves de `.env` siguen siendo válidas para la org 1.
+
+---
+
+## ADR-022: Meta-cobro del SaaS — cada org es un `client` de la org plataforma, postpago a $0.99/tx + $99/mes
+
+**Fecha:** 2026-06-16
+**Estado:** Aprobado
+
+### Contexto
+El CAF ahora es un producto vendible a otras empresas (ADR-020). Hay que
+**cobrar el uso del propio motor** a cada organización cliente: el SaaS debe
+facturarse a sí mismo. La pregunta es dónde y cómo se contabiliza ese
+meta-cobro sin inventar un segundo sistema de facturación paralelo y sin que el
+cobro del SaaS se dispare a sí mismo en bucle.
+
+### Decisión
+**Cada organización cliente se representa como UN `client` de la organización
+plataforma (org 1 Inovaweb)** y se le cobra con el mismo `prepaid_ledger` que
+todo lo demás (`app/services/saas_billing.py`):
+
+- Al crear una org (`POST /api/v2/orgs`), `register_org_as_platform_client`
+  (`saas_billing.py:48`) inserta una fila `clients` en la **org 1** con datos
+  fiscales placeholder (patrón app-onboard) y suscripción al plan `caf_saas`;
+  el vínculo se guarda en `organizations.platform_client_id` (migración
+  `035_org_platform_client.sql:12`). Idempotente por
+  `clients.request_id = "saas-org-{org_id}"`.
+- **Accrual por transacción ($0.99 = 99¢):** tras cada cobro real del motor,
+  el endpoint `/charge` llama `accrue_transaction(org, "charge-{ledger_id}")`
+  (`app/routers/api_router.py:386`). Es **post-charge, best-effort** (corre en
+  su propia sesión, try/except que nunca propaga) e **idempotente** por
+  `idempotency_key = "saas-tx-{source_ref}"` (`saas_billing.py:117-162`).
+  **Sin recursión:** si `org == 1` (la plataforma) se omite
+  (`saas_billing.py:126-127`) — el cobro del SaaS no debe disparar otro cobro
+  del SaaS.
+- **Cuota mensual ($99 = 9900¢):** `run_saas_monthly_billing`
+  (`saas_billing.py:170`) acumula la cuota del plan `caf_saas` a cada org
+  activa (cron mensual), idempotente por
+  `"saas-fee-{platform_client_id}-{period}"`.
+- Tarifas sembradas en el catálogo de la org 1: servicio `saas_transaccion`
+  @ 99¢ y plan `caf_saas` @ 9900/mes (`034_seed_saas_tariff.sql`).
+- **POSTPAGO:** los accrual son débitos puros que **pueden dejar saldo
+  negativo** (la org debe; se liquida mensualmente). No se valida saldo, no se
+  devuelve 402, y **no** se usa el endpoint `/charge` (se inserta directo en
+  `prepaid_ledger`) para evitar la recursión (`saas_billing.py:13-16`).
+
+### Alternativas consideradas
+- **Un módulo de facturación separado para el SaaS:** descartado. Duplicaría
+  ledger, idempotencia y reportes; reusar `prepaid_ledger` + el modelo
+  `client` da consistencia (mismas invariantes append-only de ADR-003).
+- **Prepago para el meta-cobro (bloquear org sin saldo):** descartado. Cortar
+  el motor a una empresa-cliente por saldo es desproporcionado; el SaaS es
+  postpago con liquidación mensual.
+- **Cobrar dentro del propio `/charge` (sin sesión aparte):** descartado.
+  Acoplaría el cobro del cliente final al meta-cobro; si el accrual fallara
+  rompería el cobro real. Por eso es best-effort en sesión propia y nunca
+  propaga.
+
+### Consecuencias
+- ✅ El SaaS se factura con la misma maquinaria (ledger append-only,
+  idempotencia, reportes) que cualquier cobro: una sola fuente de verdad.
+- ✅ Doble accrual imposible (idempotencia por tx y por periodo).
+- ✅ Sin bucle: la org 1 se excluye del accrual.
+- ⚠️ Best-effort: si el accrual falla, se loguea pero **no** se reintenta en
+  línea; el cobro real del cliente no se ve afectado, pero un fallo silencioso
+  sub-factura el SaaS. Mitigación: revisión periódica de logs
+  `saas_accrue_transaction_failed` (futuro: reconciliación tx vs accrual).
+- ⚠️ Saldo negativo permitido: una org morosa acumula deuda hasta el cierre
+  mensual. Es intencional (postpago), pero exige cobranza fuera de banda.
+
+---
+
+## ADR-023: Credenciales de terceros cifradas en reposo con AES-256-GCM (proveedores de email por org/cliente)
+
+**Fecha:** 2026-06-16
+**Estado:** Aprobado
+
+### Contexto
+El SaaS multi-org necesita que cada organización (y opcionalmente cada cliente)
+configure su **propio remitente de email** (Microsoft 365, Gmail, SMTP). Eso
+implica guardar secretos de terceros (app-password, refresh_token,
+client_secret, password SMTP) en la BD del CAF. Guardarlos en claro es
+inaceptable; el modelo de seguridad del CAF ya exige AES-256-GCM para sellos
+CFDI y secretos de PAC (mismo patrón con que el Hub de Pasarelas cifra las
+credenciales de pasarela por tenant).
+
+### Decisión
+Los secretos de proveedores de email se guardan **cifrados con AES-256-GCM**
+(AEAD: confidencialidad + integridad) vía `app/core/crypto.py`:
+
+- `encrypt_secret`/`decrypt_secret` (`app/core/crypto.py:65`,
+  `app/core/crypto.py:82`) producen un token `"v1." +
+  base64url(nonce[12] || ciphertext_con_tag)`.
+- **Nonce aleatorio de 12 bytes por cada cifrado** (`os.urandom`), jamás
+  reusado (reusar nonce en GCM rompe confidencialidad e integridad —
+  `app/core/crypto.py:21-23`, `crypto.py:76`).
+- La **versión del esquema** (`v1`) se liga criptográficamente como
+  **AAD** (`_AAD = b"caf-secret-v1"`, `crypto.py:37`), impidiendo
+  confusión/downgrade entre esquemas futuros.
+- La llave se deriva de `AES_KEY` del `.env` (SecretStr base64), validada en
+  cada uso a **exactamente 32 bytes** (AES-256, fail-fast con ValueError —
+  `crypto.py:45-62`). No se usa Fernet (es AES-128-CBC+HMAC, no cumple el
+  spec — `crypto.py:5-6`).
+- La tabla `email_providers` (`033_email_providers.sql:11`) guarda el secreto
+  **solo** en `secret_encrypted` (`033_email_providers.sql:22`); el router
+  `email_providers_router` cifra al escribir y **nunca devuelve el secreto en
+  claro ni en logs** — las lecturas solo exponen `secret_set`
+  (`app/routers/email_providers_router.py:13-15`). La config puede ser a nivel
+  org (`client_id NULL`) o a nivel cliente (pisa a la de la org).
+
+### Alternativas consideradas
+- **Guardar el secreto en claro / ofuscado:** descartado. Un dump de BD o un
+  log lo expondría; AEAD da confidencialidad e integridad verificable.
+- **Fernet (`cryptography`):** descartado. Es AES-128-CBC+HMAC; el spec del
+  campo `AES_KEY` exige GCM (AES-256) (`crypto.py:5-6`).
+- **KMS / Vault externo:** descartado por overhead operativo para el tamaño
+  actual; `AES_KEY` en `.env` del VPS es suficiente y consistente con el
+  resto de secretos del CAF. Migrar a KMS queda como endurecimiento futuro.
+
+### Consecuencias
+- ✅ Secretos de email en reposo cifrados y autenticados; manipulación
+  detectable (InvalidTag → ValueError).
+- ✅ Mismo helper reutilizable para cualquier secreto de tercero (consistente
+  con sellos CFDI / PAC).
+- ✅ El prefijo de versión permite rotar el esquema sin ambiguar tokens viejos.
+- ⚠️ La seguridad colapsa a la custodia de `AES_KEY`: si se filtra, todos los
+  secretos son descifrables. Mitigación: `AES_KEY` solo en `.env` del VPS,
+  nunca en git; rotación = re-cifrar con nuevo `v2.` (soportado por el diseño).
+
+---
+
+## ADR-024: Selección dinámica de pasarela desde el panel del CAF (default del Hub), con fail-safe a `HUB_GATEWAY`
+
+**Fecha:** 2026-06-16
+**Estado:** Aprobado
+
+### Contexto
+El Hub de Pasarelas soporta varias pasarelas (Conekta, Stripe, …) por tenant.
+Hasta ahora el CAF cobraba con una pasarela fija de `.env`. Se quiere que el
+**operador elija la pasarela activa desde el panel del CAF** (y administre las
+credenciales de pasarela del tenant) sin tocar SQL ni redesplegar, y que el
+cambio surta efecto en el siguiente cobro.
+
+### Decisión
+La pasarela con la que cobra el CAF es la **default activa del tenant en el
+Hub**, elegida por el operador en el panel del CAF:
+
+- El CAF administra la config de pasarela del tenant **en el Hub** vía
+  `HubAdminClient` (scope `admin:gateways`, `app/core/clients/hub_client.py:86`):
+  `save_gateway` guarda credenciales + flags (`hub_client.py:99`),
+  `set_default` fija la pasarela default sin re-enviar credenciales
+  (`hub_client.py:113`), `default_gateway` lee el slug default activo
+  (`hub_client.py:120`). **El Hub cifra y persiste las credenciales; el CAF
+  nunca las guarda ni las repite en sus respuestas** (`hub_client.py:87-89`).
+- Al iniciar un cobro, `prepago._resolve_gateway`
+  (`app/services/prepago.py:664`) lee la default del Hub para
+  `HUB_COMPANY_ID`; **fail-safe**: ante cualquier fallo (o si no hay
+  `HUB_ADMIN_KEY`) cae a `HUB_GATEWAY` del `.env` y **nunca bloquea el cobro**
+  (`prepago.py:664-680`, invocado en `prepago.py:166-168`).
+
+### Alternativas consideradas
+- **Pasarela fija en `.env` (estado previo):** descartado. Cambiarla exige
+  editar `.env` y redesplegar; no es operable por el equipo financiero.
+- **Que el CAF persista y cifre las credenciales de pasarela:** descartado.
+  El cifrado y la custodia de credenciales de pasarela son responsabilidad
+  del Hub (separación de responsabilidades); el CAF solo las **manda** al Hub
+  y lee el default.
+- **Resolver la pasarela en cada request del cliente final:** innecesario; la
+  default por tenant cubre el caso y el fail-safe evita acoplar el cobro a la
+  disponibilidad del endpoint admin del Hub.
+
+### Consecuencias
+- ✅ El operador cambia de pasarela desde el panel; el siguiente cobro la usa.
+- ✅ El CAF administra credenciales de pasarela del tenant sin SQL y sin
+  custodiarlas (las cifra el Hub).
+- ✅ Resolver la pasarela nunca tira un cobro: fail-safe a `HUB_GATEWAY`.
+- ⚠️ **Límite:** el front de `/registro` es de la **app dueña**, no del CAF; el
+  CAF expone la administración de pasarela y la resolución, pero la captura del
+  alta vive en la app cliente.
+- ⚠️ Si el default del Hub queda mal configurado, el fail-safe cobra con
+  `HUB_GATEWAY` (puede no ser la deseada). Mitigación: el panel muestra la
+  default vigente; verificar tras cambiarla.
+
+---
+
+## ADR-025: Promociones por distribuidor — código con % de descuento aplicado como bono de crédito al contratar
+
+**Fecha:** 2026-06-16
+**Estado:** Aprobado
+
+### Contexto
+Inovaweb capta clientes a través de **distribuidores**. Cada distribuidor
+reparte un **código de promoción** que debe traducirse en un descuento al
+contratar (self-service). Hay que decidir quién valida el código, dónde se
+aplica el descuento y cómo se evita el doble conteo ante reintentos del alta.
+
+### Decisión
+Un **código de promoción se asocia a un distribuidor y lleva un `discount_pct`**;
+el CAF lo valida y lo aplica como **bono de crédito** sobre el grant del plan, al
+contratar:
+
+- Migración `036_distributors.sql`: tabla `distributors`
+  (`036_distributors.sql:9`, por ahora solo `name`) + columna
+  `promotions.distributor_id` y `promotions.discount_pct` (referida en
+  `036_distributors.sql:20-21`; el `%` vive en la promo). Cada promo →
+  distribuidor + % de descuento.
+- El **código viaja en el alta self-service** `POST /api/v2/apps/onboard`
+  (campo `promo_code`, `app/routers/api_router.py:401`): **la app dueña lo
+  manda**; el CAF solo valida y aplica (`api_router.py:452-455`).
+- Validación (`api_router.py:460-480`): la promo debe ser de la **org de la
+  llave**, activa, vigente (`now() BETWEEN valid_from AND valid_to`), con
+  `discount_pct` no nulo y dentro de `max_uses`. El **uso se cuenta de forma
+  atómica** (`UPDATE ... WHERE uses_count < max_uses RETURNING id`,
+  `api_router.py:470-473`) para respetar el tope ante carreras.
+- El bono = `round(granted * discount_pct / 100)` se suma al grant del plan y
+  se asienta en `prepaid_ledger` con `source='grant_plan'` e
+  **idempotencia** por `idempotency_key = "grant-{client_id}-{plan_code}"`
+  (`api_router.py:440`, `482-492`): un reintento del alta **no** duplica grant
+  ni bono ni uso (si el grant ya existe, retorna temprano —
+  `api_router.py:444-450`).
+
+### Alternativas consideradas
+- **Que la app dueña calcule y aplique el descuento:** descartado. Abre la
+  puerta a fraude y duplica la lógica de promociones en cada app; **el CAF
+  define y aplica**, la app solo pide el código.
+- **Descuento como rebaja del precio de catálogo en vez de bono de crédito:**
+  descartado para el alta; el bono de crédito al `prepaid_ledger` es directo,
+  auditable y consistente con el modelo prepago (el cliente recibe más saldo).
+- **Conteo de uso no atómico (leer-luego-incrementar):** descartado; permitiría
+  exceder `max_uses` bajo concurrencia. Se usa `UPDATE ... RETURNING`.
+
+### Consecuencias
+- ✅ El descuento por distribuidor se aplica una sola vez, atómicamente, como
+  saldo extra; trazable en el ledger (meta con `promo_code`, `distributor_id`,
+  `discount_pct`, `bonus_cents`).
+- ✅ `max_uses` se respeta bajo concurrencia; los reintentos del alta son
+  idempotentes (no doble bono ni doble conteo).
+- ✅ Atribución a distribuidor disponible para reportes (vía `distributor_id`).
+- ⚠️ El conteo de uso se incrementa **antes** de asentar el bono; si el INSERT
+  del ledger fallara tras contar el uso, se "gastaría" un uso sin acreditar el
+  bono. Riesgo bajo (misma transacción); a vigilar.
+- ⚠️ De `distributors` solo se captura el nombre por ahora
+  (`036_distributors.sql:13` deja `external_ref` para el futuro); la
+  liquidación de comisiones al distribuidor es trabajo posterior.
+
+---
+
 ## Pendientes de ADR (placeholder)
 
 - **ADR-018: Backups y RPO/RTO del CAF** — `[TODO: completar]`. Necesita
