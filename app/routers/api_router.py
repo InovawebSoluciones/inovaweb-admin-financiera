@@ -398,13 +398,18 @@ class AppOnboardBody(BaseModel):
     billing_email: EmailStr
     plan_code: str
     external_ref: str | None = None   # id de la empresa en la app (idempotencia + link)
+    promo_code: str | None = None     # código de distribuidor; aplica % al contratar
 
 
 class AppOnboardResponse(BaseModel):
     client_id: int
     wallet_id: str
     plan_code: str
-    granted_cents: int
+    granted_cents: int                # crédito total acreditado (grant + bono promo)
+    promo_applied: bool = False
+    promo_code: str | None = None
+    discount_pct: float | None = None
+    bonus_cents: int = 0
 
 
 @router.post("/apps/onboard", response_model=AppOnboardResponse, status_code=status.HTTP_201_CREATED)
@@ -432,13 +437,62 @@ async def api_app_onboard(
         {"c": body.plan_code, "org": org},
     )).scalar()
     granted = int(grant) if grant else 0
-    if granted > 0:
+    grant_key = f"grant-{r.client_id}-{body.plan_code}"
+
+    # Reintento idempotente del alta: si el grant ya se acreditó, NO se re-aplica
+    # (ni el grant ni el bono/uso de la promo). Evita doble crédito y doble conteo.
+    existing = (await db.execute(
+        text("SELECT amount_cents FROM prepaid_ledger WHERE client_id=:c AND idempotency_key=:k"),
+        {"c": r.client_id, "k": grant_key},
+    )).scalar()
+    if existing is not None:
+        return AppOnboardResponse(client_id=r.client_id, wallet_id=r.wallet_id,
+                                 plan_code=body.plan_code, granted_cents=int(existing))
+
+    # Código de promoción (distribuidor): si es válido, su discount_pct se aplica
+    # como BONO de crédito sobre el grant del plan (al contratar). El front del
+    # registro lo manda la app dueña; el CAF solo valida y aplica. Idempotente: el
+    # grant tiene idempotency_key, así que un reintento no duplica el bono.
+    promo_applied = False
+    discount_pct: float | None = None
+    bonus = 0
+    promo_meta: dict = {}
+    if body.promo_code and granted > 0:
+        promo = (await db.execute(text("""
+            SELECT id, discount_pct, distributor_id, max_uses, uses_count
+            FROM promotions
+            WHERE organization_id=:org AND code=:code AND is_active=true
+              AND now() BETWEEN valid_from AND valid_to
+              AND discount_pct IS NOT NULL
+        """), {"org": org, "code": body.promo_code.strip().upper()})).mappings().first()
+        if promo and (promo["max_uses"] is None or promo["uses_count"] < promo["max_uses"]):
+            # cuenta el uso de forma atómica (respeta max_uses ante carreras)
+            used = (await db.execute(text(
+                "UPDATE promotions SET uses_count = uses_count + 1 "
+                "WHERE id=:id AND (max_uses IS NULL OR uses_count < max_uses) RETURNING id"
+            ), {"id": promo["id"]})).first()
+            if used:
+                discount_pct = float(promo["discount_pct"])
+                bonus = round(granted * discount_pct / 100)
+                promo_applied = True
+                promo_meta = {"promo_code": body.promo_code.strip().upper(),
+                              "distributor_id": promo["distributor_id"],
+                              "discount_pct": discount_pct, "bonus_cents": bonus}
+
+    total = granted + bonus
+    if total > 0:
+        meta = {"plan": body.plan_code, "external_ref": body.external_ref}
+        meta.update(promo_meta)
         await db.execute(
             text("INSERT INTO prepaid_ledger (client_id, organization_id, kind, amount_cents, source, idempotency_key, meta) "
                  "VALUES (:c, :org, 'credit', :a, 'grant_plan', :k, CAST(:m AS jsonb)) "
                  "ON CONFLICT (client_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING"),
-            {"c": r.client_id, "org": org, "a": granted, "k": f"grant-{r.client_id}-{body.plan_code}",
-             "m": _json.dumps({"plan": body.plan_code, "external_ref": body.external_ref})},
+            {"c": r.client_id, "org": org, "a": total, "k": grant_key,
+             "m": _json.dumps(meta)},
         )
-    return AppOnboardResponse(client_id=r.client_id, wallet_id=r.wallet_id,
-                             plan_code=body.plan_code, granted_cents=granted)
+    return AppOnboardResponse(
+        client_id=r.client_id, wallet_id=r.wallet_id, plan_code=body.plan_code,
+        granted_cents=total, promo_applied=promo_applied,
+        promo_code=(body.promo_code.strip().upper() if promo_applied else None),
+        discount_pct=discount_pct, bonus_cents=bonus,
+    )
