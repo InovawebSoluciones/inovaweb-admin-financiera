@@ -443,13 +443,86 @@ async def list_promotions(
     user: CurrentUser = Depends(_OPS),
     db: AsyncSession = Depends(get_db),
 ) -> HTMLResponse:
-    oc, op = _org_scope(user)
-    rows = (await db.execute(text(
-        f"SELECT * FROM promotions WHERE TRUE{oc} ORDER BY valid_from DESC"
-    ), op)).mappings().all()
+    oc, op = _org_scope(user, "p.organization_id")
+    rows = (await db.execute(text(f"""
+        SELECT p.*, d.name AS distributor_name
+        FROM promotions p
+        LEFT JOIN distributors d ON d.id = p.distributor_id
+        WHERE TRUE{oc} ORDER BY p.created_at DESC
+    """), op)).mappings().all()
+    oc2, op2 = _org_scope(user)
+    distribuidores = (await db.execute(text(
+        f"SELECT id, name, is_active FROM distributors WHERE TRUE{oc2} ORDER BY name"
+    ), op2)).mappings().all()
     return templates.TemplateResponse(
-        request, "admin/promotions.html", {"user": user, "rows": list(rows)},
+        request, "admin/promotions.html",
+        {"user": user, "rows": list(rows), "distribuidores": list(distribuidores),
+         "saved": request.query_params.get("saved")},
     )
+
+
+@router.post("/catalog/distributors")
+async def create_distributor(
+    request: Request,
+    user: CurrentUser = Depends(_WRITE),
+    db: AsyncSession = Depends(get_db),
+    name: str = Form(...),
+):
+    """Da de alta un distribuidor (por ahora solo el nombre)."""
+    nm = name.strip()
+    if not nm:
+        return RedirectResponse("/admin/catalog/promotions?saved=error_nombre", status_code=303)
+    await bind_actor(db, actor_user_id=user.id,
+                     actor_ip=request.client.host if request.client else None,
+                     request_id=getattr(request.state, "request_id", None))
+    await db.execute(
+        text("INSERT INTO distributors (name, organization_id) VALUES (:n, :org)"),
+        {"n": nm, "org": user.organization_id},
+    )
+    return RedirectResponse("/admin/catalog/promotions?saved=dist_ok", status_code=303)
+
+
+@router.post("/catalog/promotions/new")
+async def create_promo_code(
+    request: Request,
+    user: CurrentUser = Depends(_WRITE),
+    db: AsyncSession = Depends(get_db),
+    code: str = Form(...),
+    discount_pct: float = Form(...),
+    distributor_id: int = Form(...),
+):
+    """Crea un código de promoción ligado a un distribuidor, con descuento en %.
+
+    El código se aplica al contratar (self-service). kind='referral'; vigencia
+    abierta (10 años); el % debe estar entre 0 y 100.
+    """
+    cd = code.strip().upper()
+    if not cd:
+        return RedirectResponse("/admin/catalog/promotions?saved=error_code", status_code=303)
+    if not (0 < discount_pct <= 100):
+        return RedirectResponse("/admin/catalog/promotions?saved=error_pct", status_code=303)
+    # el distribuidor debe ser de la org del usuario
+    d = (await db.execute(
+        text("SELECT 1 FROM distributors WHERE id=:d AND organization_id=:org"),
+        {"d": distributor_id, "org": user.organization_id},
+    )).first()
+    if not d:
+        return RedirectResponse("/admin/catalog/promotions?saved=error_dist", status_code=303)
+    await bind_actor(db, actor_user_id=user.id,
+                     actor_ip=request.client.host if request.client else None,
+                     request_id=getattr(request.state, "request_id", None))
+    try:
+        await db.execute(text("""
+            INSERT INTO promotions
+              (code, name, kind, discount_pct, valid_from, valid_to,
+               distributor_id, organization_id, is_active)
+            VALUES (:code, :name, 'referral', :pct, now(), now() + interval '10 years',
+                    :did, :org, true)
+        """), {"code": cd, "name": f"Código {cd}", "pct": discount_pct,
+               "did": distributor_id, "org": user.organization_id})
+    except Exception:  # noqa: BLE001 - code duplicado u otra violación
+        return RedirectResponse("/admin/catalog/promotions?saved=error_code_dup", status_code=303)
+    return RedirectResponse("/admin/catalog/promotions?saved=promo_ok", status_code=303)
 
 
 # ---------------------------------------------------------------------
