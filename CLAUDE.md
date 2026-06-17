@@ -314,7 +314,7 @@ pospuesta hasta demanda real.
 
 ## 12. ESTADO ACTUAL Y PENDIENTES (actualizar al cerrar cada sesion)
 
-**Sesion al: 2026-06-14. Foco: saldo-B nativo + traslado de control a CAF + documentacion formal de los 4 modulos (medidor/finanzas/centro-mensajes/hub).**
+**Sesion al: 2026-06-17. Foco: motor SaaS multi-tenant + Stripe E2E + columna app_slug + reportes de consumo.**
 
 > **ACTUALIZACION 2026-06-08 (sesion LiaForge) — leer esto primero:**
 > - **P2 (consumo E2E) HECHO y EN PROD:** IA Perplexity via proxy nuevo del Medidor (/llm/perplexity, mide+debita wallet client-5; PROXY_DEFAULT_WALLETS factura al cliente) + email via endpoint nuevo Centro POST /v1/messages/record (Scraping send_email lo reporta) -> sync CAF->Finanzas (source=medidor/messages) por cron */5. Verificado: $500 -> $497.69. Key DeepSeek corregida.
@@ -365,12 +365,36 @@ CAF clients.id <-> external_user_id "client-{id}" en cada core.
 - **Hub:** cambios D2 commiteados **SOLO en el repo del VPS**; push a GitHub PENDIENTE.
 - **Centro:** D2 pusheado. **Medidor/Finanzas:** sin cambios de codigo (solo api_keys).
 
-### ✅ Docs formales AL DIA (traslada 2026-06-14, commit af0e078)
-README/ADR/RUNBOOK/DEPLOY/CHANGELOG/OWASP regenerados con `inovaweb-documentacion`, cubriendo
-la capa **saldo prepago NATIVO** (prepaid_ledger + /charge + /apps/onboard + multi-app Bearer) y la
-reconciliacion VPS<->GitHub. ADR-015/016/017 nuevos. OWASP 2026-06-14 = PASS CON OBSERVACIONES.
-Repo VPS == GitHub (af0e078). NOTA: capa saldo-B (jun 9-11) es posterior a la fecha del encabezado
-de esta §12; el detalle vivo esta en la memoria project_caf_auditoria_global.md. Los 4 modulos que administra el CAF estan documentados en docs/modulos/ (medidor, finanzas, centro-mensajes, hub-pasarelas + indice README.md).
+### ✅ Sesion 2026-06-16 — Motor SaaS multi-tenant (commits 8960434, d9c5334, 1063ced en CAF; 1619dae en Hub)
+- **Multi-tenancy:** migraciones 031-036 aplicadas. `organizations` table + `organization_id` en 13 tablas. org 1 = plataforma Inovaweb (ve todo). Cada org tiene su catálogo, llaves, consumo y admin delegado.
+- **API keys self-service:** orgs acuñan sus propias llaves via `/api/v2/auth/api-keys` (scope system). ADR-021.
+- **Meta-cobro SaaS:** cada org es `client` de org 1; $0.99/tx + $99/mes (ADR-022). Cron `meta_billing` registra.
+- **AES-256-GCM para email_providers:** secretos cifrados en reposo por org/cliente (ADR-023).
+- **Pasarelas dinámicas:** CAF lee default gateway del Hub, front `/admin/payment-gateways` para configurar sk_/whsec_ sin SQL (ADR-024). HubAdminClient en hub_client.py.
+- **Distribuidores+promociones:** tabla `distributors`, códigos de descuento como bono de crédito (ADR-025).
+- **Stripe en Hub (commit 1619dae):** Checkout Session, firma HMAC `Stripe-Signature`, fail-closed. Activo en catálogo (`active_count=4`).
+- **Hub admin endpoint (commit 1063ced):** `POST /admin/hub/v1/gateway-config` (scope `admin:gateways`), cifra creds con AES + upsert.
+- **ADR-020/025** añadidos al docs/ADR.md.
+- **OWASP 2026-06-16:** PASS CON OBSERVACIONES (CSRF SameSite mitiga, JWT TTL 12h ventana ampliada, audit actor_user_id=1 en self-service onboard).
+
+### ✅ Sesion 2026-06-17 — app_slug + Stripe E2E + reportes de consumo (commits b12a719, b8dcfba en CAF; 5d53a50 en Hub)
+- **Migración 037:** `app_slug TEXT` en tabla `services`; backfill: liaforge/swigg/caf por `code`. Aplica al identificar a qué producto pertenece cada servicio cobrable.
+- **Templates admin:** columna "App" en `/admin/catalog/services` y `/admin/catalog/plans`.
+- **`POST /api/v2/clients/{id}/recharge` (commit d7b12c1):** endpoint app-facing Bearer. Reusa `initiate_charge`. LiaForge lo consume para recargar saldo de sus clientes programáticamente.
+- **Stripe E2E verificado:** llaves test (sk_test_/whsec_YEDt) cargadas via front pasarelas. Webhook `we_1TjAXWIz` registrado en Stripe test dashboard. Flujo: LiaForge → CAF /recharge → Hub cs_test_ → 4242 → webhook → CAF acredita. Saldo 4 080→9 080 cr ✅.
+- **Hub fix `success_url` (commit 5d53a50):** gateway buscaba solo `success_url`; CAF manda `return_url`. Fix: `metadata.get('success_url') or metadata.get('return_url') or fallback`.
+- **Reportes de consumo:** `GET /admin/reports/consumption` (página Jinja2 + Chart.js) + `GET /admin/reports/consumption/data` (JSON). Query sobre `prepaid_ledger JOIN services` con filtros: fecha desde/hasta, multiselect App y Core. Gráficas: donut por app, barras top 5 servicios. Tabla detalle: cliente/app/core/servicio/uds/fecha/monto. Fix: `clients.name` → `COALESCE(c.trade_name, c.legal_name)`.
+- **Tarea pendiente #1:** webhook Stripe LIVE antes de salir a producción.
+- **Tarea pendiente #2:** "Error al cargar datos" en reportes — investigar 500 residual.
+
+### ✅ Docs formales AL DIA (traslada 2026-06-17, en curso)
+README/ADR/RUNBOOK/DEPLOY/CHANGELOG/OWASP en regeneración. ADR-026/027 nuevos (app_slug + reportes). VPS==GitHub b8dcfba.
+
+### Estado de repos (2026-06-17)
+- **CAF:** VPS == GitHub (b8dcfba). Deploy = `git pull` + `docker compose up -d --build`.
+- **Hub:** VPS == GitHub (5d53a50 CAF fix; 1619dae Stripe). Deploy = `docker compose up -d --build hub`.
+- **Scraping/LiaForge:** deploy = scp. No git pull en VPS.
+- **Centro/Medidor/Finanzas:** sin cambios de código en estas sesiones.
 
 ### Pendientes (orden)
 | # | Pendiente | Owner |
@@ -380,7 +404,9 @@ de esta §12; el detalle vivo esta en la memoria project_caf_auditoria_global.md
 | P3 | Proveedor de email en Centro (`tenant_channel_credentials` VACIO) -> Resend o SMTP M365 | usuario (credencial) |
 | P4 | Push del Hub a GitHub (hoy solo en VPS) | pendiente |
 | P5 | Deploy key de `scraping-inovaweb` en el VPS (para habilitar `git pull` de Scraping; hoy solo scp) | usuario (GitHub) |
-| P6 | Docs formales: correr `traslada`/`inovaweb-documentacion` para ponerlos al dia | pendiente |
+| P6 | Docs formales 2026-06-17 | ✅ en curso (traslada activo) |
+| T1 | Webhook Stripe LIVE antes de producción | pendiente |
+| T2 | Fix "Error al cargar datos" reportes (500 residual) | pendiente |
 | 1 | DNS/TLS admin/app.inovaweb.com.mx | usuario |
 | F | CFDI 4.0 via Ecofile | diferido |
 

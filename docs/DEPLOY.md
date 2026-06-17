@@ -395,6 +395,15 @@ Aplicar **en este orden** tras `030`. Todas son **additivas, idempotentes y tran
 | 034 | `034_seed_saas_tariff.sql` | Seed (idempotente, `ON CONFLICT … DO UPDATE`) de la **tarifa del propio SaaS del CAF** en la org plataforma (organization_id=1). Modelo híbrido: servicio `saas_transaccion` = $0.99 (99¢) por transacción facturable + plan `caf_saas` = $99/mes (9900¢, app_slug `caf`). Ajustar montos aquí (centavos BIGINT) si cambia el precio. |
 | 035 | `035_org_platform_client.sql` | Agrega `organizations.platform_client_id` (FK nullable a `clients(id)`) + índice. Liga cada organización con su fila "cliente" dentro de la org plataforma (org 1): vehículo del **meta-cobro** del SaaS (la plataforma factura a cada org como un cliente más dentro de la org 1). Nullable a propósito: orgs sin cliente plataforma quedan en NULL. Solo ADD COLUMN IF NOT EXISTS + índice. |
 | 036 | `036_distributors.sql` | Crea tabla `distributors` (id, organization_id DEFAULT 1 + FK, name, external_ref futuro, is_active) + índice; y agrega `promotions.distributor_id` (FK a `distributors(id)`) + índice. Cada código de promoción se asocia a un distribuidor; el código lleva descuento en % (`promotions.discount_pct`) que se aplica al contratar (self-service). Por ahora del distribuidor solo se da de alta el nombre. |
+| 037 | `037_services_app_slug.sql` | Agrega columna `app_slug TEXT` a tabla `services`. Backfill automático en la misma migración: asigna `app_slug` a los servicios de LiaForge, Swigg y CAF según su `code`. Permite identificar a qué producto pertenece cada servicio cobrable (usado en la vista de reportes de consumo, filtro "App"). |
+
+### Migración 037 — app_slug en services (2026-06-17)
+
+```powershell
+Get-Content "037_services_app_slug.sql" | ssh root@89.116.25.222 "docker exec -i caf_postgres psql -U caf -d admin_financiera"
+```
+
+Backfill automático en la migración: services de LiaForge, Swigg y CAF quedan etiquetados.
 
 **Comando de aplicación** (psql directo dentro del contenedor, parar al primer error):
 ```bash
@@ -442,7 +451,31 @@ Tras cambiar el `.env`, **recrear el contenedor** (no basta restart) para que to
 docker compose up -d admin_financiera
 ```
 
-### 11.3 Cron nuevo — cierre mensual del SaaS
+### 11.3 Endpoints de reportes de consumo (sesión 2026-06-17)
+
+Dos endpoints nuevos bajo `/admin/reports/consumption`:
+
+| Endpoint | Descripción | Requiere rebuild |
+|---|---|---|
+| `GET /admin/reports/consumption` | Página HTML de reportes (Jinja2 + Chart.js). Baked en la imagen Docker (`COPY app ./app`). | **Sí** — cambios en el template requieren `docker compose up -d --build admin_financiera` |
+| `GET /admin/reports/consumption/data` | JSON con métricas de consumo. Lógica en Python puro, no en template. | **No** — basta con SCP del archivo Python al VPS + `docker compose restart admin_financiera` |
+
+**Cuando solo cambia la lógica del endpoint `/data`** (sin tocar el template):
+```bash
+# 1. transferir solo el router/servicio modificado
+scp "C:\path\local\app\routers\reports_router.py" root@89.116.25.222:/opt/inovaweb-admin-financiera/app/routers/
+
+# 2. reiniciar (sin rebuild)
+ssh root@89.116.25.222 "docker compose restart admin_financiera"
+```
+
+**Cuando cambia el template** (`admin/reports/consumption.html`):
+```bash
+# rebuild completo
+ssh root@89.116.25.222 "cd /opt/inovaweb-admin-financiera && git pull && docker compose up -d --build admin_financiera"
+```
+
+### 11.4 Cron nuevo — cierre mensual del SaaS
 
 Agregar al crontab del VPS (junto a los workers del RUNBOOK §3.4) el script de cierre mensual del SaaS:
 ```cron
@@ -451,7 +484,7 @@ Agregar al crontab del VPS (junto a los workers del RUNBOOK §3.4) el script de 
 Corre **a las 06:00 del día 1 de cada mes**: cierre/facturación mensual del SaaS (servicio
 `saas_transaccion` + plan `caf_saas` sembrados en mig 034).
 
-### 11.4 Deploy de backend (recordatorio)
+### 11.5 Deploy de backend (recordatorio)
 
 Sin cambios respecto a §3: el deploy de backend sigue siendo
 ```bash
@@ -460,7 +493,7 @@ docker compose up -d --build admin_financiera
 Y todo deploy = **scp/edit al VPS Y commit+push** a GitHub (remoto alias `github-caf`, llave
 `/root/.ssh/id_ed25519`; ver §10.1). El repo del VPS es la fuente de verdad.
 
-### 11.5 Checklist post-deploy (sesión 2026-06-16)
+### 11.6 Checklist post-deploy (sesión 2026-06-16 + 2026-06-17)
 
 Además del checklist §3.2, verificar:
 
@@ -478,4 +511,19 @@ Además del checklist §3.2, verificar:
       ```
 - [ ] `JWT_ACCESS_TTL_MIN=720` tomado (sesión de 12h; el contenedor fue **recreado**, no solo reiniciado)
 - [ ] Cron `run_saas_monthly_billing.sh` presente en `crontab -l` (`0 6 1 * *`)
+- [ ] Migración **037 aplicada**: columna `app_slug` existe en `services` con backfill correcto
+      ```bash
+      docker compose exec -T postgres psql -U caf -d admin_financiera -c "SELECT code, app_slug FROM services WHERE app_slug IS NOT NULL LIMIT 10;"
+      ```
+- [ ] `GET /admin/reports/consumption` retorna 200 tras login (requiere rebuild si el template cambió)
+      ```bash
+      # verificar desde el VPS con cookie de sesión válida
+      curl -fsS -b "session=<token>" https://admin.inovaweb.com.mx/admin/reports/consumption -o /dev/null -w "%{http_code}"
+      ```
+- [ ] `GET /admin/reports/consumption/data` retorna JSON con `metrics.tx_count >= 0`
+      ```bash
+      curl -fsS -b "session=<token>" \
+        'https://admin.inovaweb.com.mx/admin/reports/consumption/data?date_from=YYYY-MM-01&date_to=YYYY-MM-DD' \
+        | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['metrics']['tx_count'] >= 0; print('OK tx_count=', d['metrics']['tx_count'])"
+      ```
 

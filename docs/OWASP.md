@@ -247,3 +247,40 @@ app-facing) y H-D (confirmar `metadata.purpose` del webhook del Hub).
    real = 720 (el default de `config.py` sigue en 15).
 
 *Addendum OWASP — auditoría de código nuevo 2026-06-16 (multi-org SaaS). Sin commit ni deploy.*
+
+---
+
+## Addendum 2026-06-17 — app_slug + Stripe E2E + reportes de consumo
+
+**Commit auditado:** `b8dcfba` (CAF) + `5d53a50` (Hub)
+**Resultado:** PASS CON OBSERVACIONES
+
+### Nuevos endpoints revisados
+
+| Endpoint | Auth | Observación |
+|----------|------|-------------|
+| `GET /admin/reports/consumption` | ✅ `_OPS` (super_admin/finanzas/lectura) | OK |
+| `GET /admin/reports/consumption/data` | ✅ `_OPS` | OK |
+| `POST /api/v2/clients/{id}/recharge` | ✅ Bearer API key + assert_client_in_org | OK |
+
+### SQL Injection — `/admin/reports/consumption/data`
+✅ PASS. Los filtros de `app_list` y `core_list` se construyen con placeholders nominales (`ap0, ap1, co0, co1…`) nunca interpolando valores de usuario directamente en el SQL. Los parámetros de fecha usan `:df` y `:dt`.
+
+⚠️ OBSERVACIÓN: la cláusula WHERE se construye concatenando strings `filters.append(...)`. Es seguro porque los valores van en `params`, pero si un desarrollador futuro interpola por error una variable en el string de filtro (no en params), habría SQLi. Recomendación: migrar a SQLAlchemy ORM o usar `select()` con `and_()` en lugar de `text()` dinámico en la próxima refactorización.
+
+### XSS — `reports.html`
+✅ PASS. La plantilla Jinja2 auto-escapa todas las variables `{{ r.client }}`, `{{ r.service }}` etc. El único `innerHTML` está en JS con datos del JSON del backend, que ya vienen validados por el tipo Python (strings de BD). No hay `|safe` en la plantilla.
+
+### CSRF
+✅ PASS. Los endpoints nuevos son GET (datos) y el recharge es POST autenticado con Bearer API key (no cookie), exento de CSRF por diseño.
+
+### Secrets hardcodeados
+✅ PASS. No hay secrets en los nuevos archivos. `whsec_` y `sk_test_` se almacenan en `company_gateway_config.config_encrypted` (AES-256-GCM). No aparecen en código ni en templates.
+
+### Gestión de sesiones
+Sin cambios respecto a auditoría anterior. Observaciones previas vigentes.
+
+### Acciones requeridas antes del siguiente push
+Ninguna crítica. Las observaciones ⚠️ quedan como deuda técnica documentada.
+
+*Addendum OWASP — auditoría 2026-06-17 (app_slug + Stripe E2E + reportes). Commits b8dcfba + 5d53a50.*

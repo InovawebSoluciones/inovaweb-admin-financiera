@@ -7,6 +7,25 @@ Orden cronológico inverso: lo más reciente primero.
 
 ---
 
+## [0.8.0] — 2026-06-17 — app_slug + Stripe E2E + reportes de consumo
+
+### Agregado
+- **Migración 037 (`037_services_app_slug.sql`)**: columna `app_slug TEXT` en tabla `services` con backfill: `liaforge` (agente_corrida, descubrimiento, email, geocoding, scraping, validacion_*), `swigg` (envio_video, guion_ia, video_producido, vista_video), `caf` (saas_transaccion).
+- **Columna "App" en panel admin**: templates `admin/services.html` y `admin/plans.html` muestran `app_slug` de cada servicio y plan.
+- **`GET /admin/reports/consumption`**: página de reportes de consumo con filtros de fecha (desde/hasta), multiselección de App (LiaForge/Swigg/CAF) y Core (medidor/messages/internal). Muestra métricas (ingresos, tx, clientes únicos, servicio top), donut por app, barras top 5 servicios y tabla detalle (cliente/app/core/servicio/uds/fecha/monto) via Chart.js.
+- **`GET /admin/reports/consumption/data`**: endpoint JSON que alimenta la página de reportes. Query sobre `prepaid_ledger JOIN services` con filtros dinámicos y agrupación. Límite 500 filas.
+- **Menú lateral "Reportes > Consumo"** en `_layout.html`.
+- **`POST /api/v2/clients/{id}/recharge`** (commit `d7b12c1`): endpoint app-facing Bearer (`SCRAPING_ADMIN_KEY`). Reusa `initiate_charge`. Permite que apps externas (LiaForge) recarguen saldo de sus clientes programáticamente.
+
+### Corregido
+- **Hub: `success_url` + `return_url`** (commit `5d53a50`): `stripe_gateway.py` buscaba solo `success_url` en metadata; el CAF manda `return_url`. Fix: `metadata.get('success_url') or metadata.get('return_url') or fallback`.
+- **Reportes: `clients.name` → `COALESCE(c.trade_name, c.legal_name)`** (commit `b8dcfba`): la tabla `clients` no tiene columna `name`; corregido a `legal_name` con fallback a `trade_name`.
+
+### Verificado
+- **Stripe E2E test completo**: llaves test `sk_test_/whsec_YEDt…` cargadas via front de pasarelas. Webhook `we_1TjAXWIz` en Stripe test dashboard → `https://hub.inovaweb.com.mx/webhooks/stripe`. Flujo: LiaForge → CAF `/api/v2/clients/13/recharge` → Hub `cs_test_` → tarjeta 4242 → webhook `checkout.session.completed` → Hub verifica firma → CAF acredita. Saldo verificado: 4 080 → 9 080 cr ✅.
+
+---
+
 ## [0.7.0] — 2026-06-16 — Motor SaaS multi-tenant + administración delegada + pasarelas/promos
 
 > Sesión 2026-06-16 (desde `af0e078`). El CAF deja de ser mono-tenant de Inovaweb y pasa a ser

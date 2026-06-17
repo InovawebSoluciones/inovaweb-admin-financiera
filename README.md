@@ -108,6 +108,7 @@ organización.
 | Templates | `app/templates/` | Jinja2 + HTMX (admin/ + portal/) |
 | Schema SQL | `database/001_initial_schema.sql` | Tablas, roles, FKs |
 | Seguridad SQL | `database/002_security_constraints.sql` | Triggers append-only + auditoría |
+| Migración 037 | `database/migrations/037_services_app_slug.sql` | Columna `app_slug TEXT` en `services` + backfill: `liaforge` / `swigg` / `caf` por `code` |
 | Tests | `tests/` | health, jwt, password, onboarding, promotions |
 
 ---
@@ -279,6 +280,8 @@ por `organization_id`):
 - **Catálogo (CRUD):** `/admin/catalog/{products|services|plans|promotions}`
 - **Usuarios:** `/admin/users/*`
 - **Reportes:** `/admin/reports/*`
+  - `GET /admin/reports/consumption` — Página de reportes de consumo con filtros fecha/app/core y gráficas Chart.js (donut por app, barras top 5 servicios)
+  - `GET /admin/reports/consumption/data` — JSON: métricas + top servicios + detalle por cliente; query sobre `prepaid_ledger JOIN services` con filtros opcionales `date_from`, `date_to`, `app_slug`, `core`
 - **Seguridad:** `/admin/security/*`
 - **Pasarelas de pago:** `/admin/payment-gateways` (config + default; el Hub
   cifra las credenciales del tenant)
@@ -321,7 +324,7 @@ Motor multi-tenant — dos planos:
 - `GET /api/v2/clients/{id}/prepaid-balance` — saldo prepago **nativo del CAF** (`v_client_balance`).
 - `GET /api/v2/clients/{id}/ledger` — movimientos del `prepaid_ledger` + consumo del mes.
 - `GET /api/v2/clients/{id}/plan-limits` — límites del plan + precios (solo lectura; medición de uso).
-- `GET /api/v2/services` — catálogo de servicios activos con precio unitario.
+- `GET /api/v2/services` — catálogo de servicios activos con precio unitario. La tabla `services` incluye la columna `app_slug TEXT` (migración 037) que identifica el producto al que pertenece cada servicio cobrable (`liaforge`, `swigg`, `caf`, etc.); se usa como dimensión de filtrado en los reportes de consumo.
 
 ### 6.5 Webhooks
 - `POST /webhooks/pac` — timbrado exitoso / fallido (diferido con CFDI)

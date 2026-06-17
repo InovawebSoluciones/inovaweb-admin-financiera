@@ -1003,3 +1003,32 @@ justificado.
 **Verificación:** repetir `POST /apps/onboard` con el `promo_code` → la respuesta trae
 `promo_applied: true` y el `granted_cents` refleja el bono; `uses_count` sube en 1.
 
+---
+
+### 11.7 Reportes de consumo — `/admin/reports/consumption`
+
+**Síntoma:** La página de reportes muestra "Error al cargar datos" o la tabla está vacía aunque hay registros en prepaid_ledger.
+
+**Diagnóstico:**
+```bash
+# Ver error exacto del último request a /admin/reports/consumption/data
+docker logs caf_app --since 5m 2>&1 | grep -A 20 'reports/consumption/data'
+```
+
+**Causas frecuentes y fix:**
+
+| Causa | Fix |
+|-------|-----|
+| Columna SQL incorrecta (ej. `c.name` no existe) | Corregir query en `admin_router.py`, SCP + rebuild |
+| `app_slug` NULL en services sin backfill | Ejecutar migración 037 o UPDATE manual |
+| Fetch JS falla por CORS o sesión expirada | Verificar cookie de sesión en DevTools → re-login |
+| Filtro de apps/cores vacío (ninguno marcado) | El filtro vacío = 0 resultados (comportamiento correcto) |
+
+**Verificar que se resolvió:**
+```bash
+# Con sesión válida (sustituir <cookie>):
+curl -s -b 'session=<cookie>' \
+  'https://admin.inovaweb.com.mx/admin/reports/consumption/data?date_from=2026-06-01&date_to=2026-06-17' \
+  | python3 -c "import sys,json; d=json.load(sys.stdin); print('OK tx:', d['metrics']['tx_count'])"
+```
+

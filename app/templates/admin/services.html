@@ -5,6 +5,7 @@
   <table class="w-full text-sm">
     <thead class="bg-slate-100 text-xs uppercase text-slate-600">
       <tr><th class="px-3 py-2 text-left">Codigo</th><th class="px-3 py-2 text-left">Nombre</th>
+        <th class="px-3 py-2 text-left">App</th>
         <th class="px-3 py-2 text-left">Core</th><th class="px-3 py-2 text-left">Unidad</th>
         <th class="px-3 py-2 text-right">Precio (MXN)</th></tr>
     </thead>
@@ -12,6 +13,7 @@
       {% for r in rows %}
       <tr class="border-t"><td class="px-3 py-2 font-mono">{{ r.code }}</td>
         <td class="px-3 py-2">{{ r.name }}</td>
+        <td class="px-3 py-2 font-mono text-xs text-slate-500">{{ r.app_slug or '—' }}</td>
         <td class="px-3 py-2">{{ r.source_core }}</td>
         <td class="px-3 py-2">{{ r.unit }}</td>
         <td class="px-3 py-2 text-right">${{ '%.4f'|format(r.unit_price_cents/100) }}</td></tr>

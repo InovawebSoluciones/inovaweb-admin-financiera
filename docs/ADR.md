@@ -1100,3 +1100,48 @@ contratar:
 - **ADR-019: 2FA para super-admin** — mencionado en CLAUDE.md y SECURITY.md
   como requisito; tecnología concreta (TOTP / WebAuthn / push) `[TODO:
   completar]`.
+
+---
+
+## ADR-026: Columna `app_slug` en `services` — identificación de producto por servicio cobrable
+
+**Fecha:** 2026-06-17
+**Estado:** Aprobado
+
+### Contexto
+La tabla `services` contenía servicios de tres productos distintos (LiaForge, Swigg, CAF) sin ninguna columna que los distinguiera. Los reportes de consumo y los paneles de administración no podían filtrar ni agrupar por producto, lo que dificultaba la operación multi-app.
+
+### Decisión
+Añadir columna `app_slug TEXT` a `services` (migración `037_services_app_slug.sql`) y hacer backfill con los valores conocidos: `liaforge` para los servicios de scraping/email/IA, `swigg` para video, `caf` para la transacción SaaS. Filas futuras sin app conocida quedan con `NULL` (visible como `—` en UI).
+
+### Alternativas consideradas
+- **Columna en `prepaid_ledger`**: copiaría el slug en cada débito → redundancia, riesgo de inconsistencia. Descartado.
+- **Tabla de relación `service_apps`**: más flexible pero innecesaria para el caso de uso actual (un servicio pertenece a una app). Descartado por complejidad.
+
+### Consecuencias
+- El endpoint de reportes puede filtrar por `s.app_slug` sin JOIN adicional.
+- El panel de Servicios y Planes muestra la columna "App" directamente.
+- Nuevos servicios deben tener `app_slug` establecido al insertar (convención, no constraint).
+
+---
+
+## ADR-027: Reportes de consumo sobre `prepaid_ledger` con filtros dinámicos en el panel admin
+
+**Fecha:** 2026-06-17
+**Estado:** Aprobado
+
+### Contexto
+El dashboard existente mostraba solo el consumo del mes actual agregado por core (cuatro barras, sin desglose). Los operadores necesitaban poder analizar el consumo por período arbitrario, producto (app) y core, con detalle por cliente y servicio.
+
+### Decisión
+Añadir al panel admin la página `GET /admin/reports/consumption` (Jinja2 + Chart.js) y un endpoint JSON `GET /admin/reports/consumption/data` que consulta `prepaid_ledger JOIN services` con tres filtros combinados: rango de fechas (desde/hasta), multiselección de `app_slug` y multiselección de `source_core`. La respuesta incluye métricas agregadas + top 5 servicios + filas de detalle (límite 500). Los filtros se construyen dinámicamente con placeholders nominales para evitar inyección SQL.
+
+### Alternativas consideradas
+- **OLAP / warehouse externo**: demasiado complejo para el volumen actual (< 10 000 filas/mes). Descartado.
+- **Consulta directa al Medidor**: el Medidor no tiene visibilidad de `app_slug` ni del nombre del cliente CAF. Descartado.
+- **Exportar CSV y analizar offline**: sin interactividad en tiempo real. Descartado como solución principal (puede añadirse como complemento).
+
+### Consecuencias
+- Los reportes reflejan el libro `prepaid_ledger` (fuente de verdad del CAF), coherente con los saldos y el cierre mensual.
+- El filtro de app requiere `app_slug` poblado en `services` (dependencia de ADR-026).
+- El límite de 500 filas por consulta es suficiente para el MVP; paginación o exportación CSV pendiente.
