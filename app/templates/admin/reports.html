@@ -1,0 +1,286 @@
+{% extends "admin/_layout.html" %}
+{% block heading %}Reportes de consumo{% endblock %}
+{% block content %}
+
+<style>
+  .filters{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:1rem}
+  .date-pair{display:flex;align-items:center;gap:6px;background:#fff;border:1px solid #e2e8f0;border-radius:6px;padding:5px 10px;font-size:13px}
+  .date-pair label{font-size:11px;color:#64748b}
+  .date-pair input{border:none;background:none;font-size:13px;color:#1e293b;outline:none;font-family:inherit;width:112px}
+  .ms-wrap{position:relative}
+  .ms-btn{display:flex;align-items:center;gap:6px;background:#fff;border:1px solid #e2e8f0;border-radius:6px;padding:5px 10px;font-size:13px;cursor:pointer;color:#1e293b;font-family:inherit;white-space:nowrap;min-width:130px;justify-content:space-between}
+  .ms-btn:hover{border-color:#94a3b8}
+  .ms-btn.open{border-color:#6366f1}
+  .ms-key{font-size:11px;color:#64748b;flex-shrink:0}
+  .ms-val{flex:1;text-align:left;font-weight:500;overflow:hidden;text-overflow:ellipsis;max-width:120px}
+  .ms-caret{font-size:9px;color:#94a3b8}
+  .ms-dd{display:none;position:absolute;top:calc(100% + 3px);left:0;min-width:170px;background:#fff;border:1px solid #cbd5e1;border-radius:6px;padding:4px 0;z-index:200}
+  .ms-dd.open{display:block}
+  .ms-dd label{display:flex;align-items:center;gap:8px;padding:6px 12px;font-size:13px;cursor:pointer;color:#1e293b;user-select:none}
+  .ms-dd label:hover{background:#f8fafc}
+  .ms-sep{border-top:1px solid #e2e8f0;margin:3px 0}
+  .ms-all{font-weight:500}
+  .metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:1rem}
+  .mc{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:12px 14px}
+  .mc label{display:block;font-size:11px;color:#64748b;margin-bottom:3px;text-transform:uppercase;letter-spacing:.04em}
+  .mc .val{font-size:22px;font-weight:500;color:#1e293b}
+  .mc .sub{font-size:11px;color:#94a3b8;margin-top:2px}
+  .charts-row{display:grid;grid-template-columns:200px 1fr;gap:10px;margin-bottom:10px}
+  .chart-box{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:14px}
+  .chart-box h3{font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.05em;color:#64748b;margin-bottom:10px}
+  .legend{display:flex;flex-direction:column;gap:5px;margin-top:10px;font-size:12px;color:#64748b}
+  .legend span{display:flex;align-items:center;gap:6px}
+  .dot{width:9px;height:9px;border-radius:2px;flex-shrink:0}
+  .table-wrap{background:#fff;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden}
+  .table-head{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;border-bottom:1px solid #e2e8f0}
+  .table-head span{font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.04em;color:#64748b}
+  .table-head .cnt{font-size:11px;font-weight:400;text-transform:none;letter-spacing:0;color:#94a3b8}
+  table{width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed}
+  th{text-align:left;padding:6px 10px;font-size:10px;color:#64748b;font-weight:400;border-bottom:1px solid #e2e8f0;background:#f8fafc}
+  td{padding:6px 10px;border-bottom:1px solid #f1f5f9;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  tr:hover td{background:#fafafa}
+  .badge{display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-weight:500}
+  .b-liaforge{background:#ede9fe;color:#5b21b6}
+  .b-swigg{background:#e0f2fe;color:#0369a1}
+  .b-caf{background:#fef3c7;color:#92400e}
+  .b-core{display:inline-block;padding:1px 6px;border-radius:3px;font-size:10px;background:#f1f5f9;color:#64748b;border:1px solid #e2e8f0}
+  .empty{padding:24px;text-align:center;color:#94a3b8;font-size:13px}
+  #spinner{display:none;text-align:center;padding:20px;color:#64748b;font-size:13px}
+</style>
+
+<div class="filters">
+  <div class="date-pair">
+    <label>Desde</label>
+    <input type="date" id="dt-from" value="{{ today_from }}">
+    <span style="color:#94a3b8;font-size:11px">—</span>
+    <label>Hasta</label>
+    <input type="date" id="dt-to" value="{{ today_to }}">
+  </div>
+
+  <div class="ms-wrap">
+    <button class="ms-btn" id="btn-app" type="button" onclick="toggleDD('app')">
+      <span class="ms-key">App</span>
+      <span class="ms-val" id="lbl-app">Todas</span>
+      <span class="ms-caret">▾</span>
+    </button>
+    <div class="ms-dd" id="dd-app">
+      <label><input type="checkbox" id="all-app" checked onchange="handleAll('app',this)"><span class="ms-all">Todas</span></label>
+      <div class="ms-sep"></div>
+      <label><input type="checkbox" class="app-opt" value="liaforge" checked onchange="handleOpt('app')"> LiaForge</label>
+      <label><input type="checkbox" class="app-opt" value="swigg" checked onchange="handleOpt('app')"> Swigg</label>
+      <label><input type="checkbox" class="app-opt" value="caf" checked onchange="handleOpt('app')"> CAF</label>
+      <label><input type="checkbox" class="app-opt" value="—" checked onchange="handleOpt('app')"> Sin app</label>
+    </div>
+  </div>
+
+  <div class="ms-wrap">
+    <button class="ms-btn" id="btn-core" type="button" onclick="toggleDD('core')">
+      <span class="ms-key">Core</span>
+      <span class="ms-val" id="lbl-core">Todos</span>
+      <span class="ms-caret">▾</span>
+    </button>
+    <div class="ms-dd" id="dd-core">
+      <label><input type="checkbox" id="all-core" checked onchange="handleAll('core',this)"><span class="ms-all">Todos</span></label>
+      <div class="ms-sep"></div>
+      {% for c in available_cores %}
+      <label><input type="checkbox" class="core-opt" value="{{ c }}" checked onchange="handleOpt('core')"> {{ c|capitalize }}</label>
+      {% endfor %}
+      <label><input type="checkbox" class="core-opt" value="—" checked onchange="handleOpt('core')"> Sin core</label>
+    </div>
+  </div>
+</div>
+
+<div class="metrics">
+  <div class="mc"><label>Ingresos período</label><div class="val" id="m-ing">—</div><div class="sub" id="m-ing2">—</div></div>
+  <div class="mc"><label>Transacciones</label><div class="val" id="m-tx">—</div><div class="sub">operaciones</div></div>
+  <div class="mc"><label>Clientes únicos</label><div class="val" id="m-cl">—</div><div class="sub">con consumo</div></div>
+  <div class="mc"><label>Servicio top</label><div class="val" id="m-top" style="font-size:14px;margin-top:4px">—</div><div class="sub" id="m-top2">—</div></div>
+</div>
+
+<div class="charts-row">
+  <div class="chart-box">
+    <h3>Por app</h3>
+    <div style="position:relative;height:130px"><canvas id="donut" role="img" aria-label="Consumo por app">Consumo por app</canvas></div>
+    <div class="legend" id="leg-app"></div>
+  </div>
+  <div class="chart-box">
+    <h3>Top servicios por ingreso</h3>
+    <div style="position:relative;height:160px"><canvas id="barSvc" role="img" aria-label="Top servicios">Top servicios</canvas></div>
+  </div>
+</div>
+
+<div id="spinner">Cargando...</div>
+
+<div class="table-wrap">
+  <div class="table-head">
+    <span>Detalle</span>
+    <span class="cnt" id="tbl-cnt">—</span>
+  </div>
+  <table>
+    <thead><tr>
+      <th style="width:20%">Cliente</th>
+      <th style="width:12%">App</th>
+      <th style="width:12%">Core</th>
+      <th style="width:18%">Servicio</th>
+      <th style="width:8%">Uds</th>
+      <th style="width:10%">Fecha</th>
+      <th style="width:11%;text-align:right">Monto</th>
+    </tr></thead>
+    <tbody id="dtable"><tr><td colspan="7" class="empty">Selecciona un rango de fechas</td></tr></tbody>
+  </table>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script>
+const APP_COLORS = {liaforge:'#6366f1', swigg:'#0ea5e9', caf:'#f59e0b', '—':'#94a3b8'};
+const APP_LABELS = {liaforge:'LiaForge', swigg:'Swigg', caf:'CAF', '—':'Sin app'};
+const CORE_LABELS = {medidor:'Medidor', messages:'Mensajes', internal:'Interno', hub:'Hub', finanzas:'Finanzas', '—':'Sin core'};
+
+let donutChart, barChart, fetchTimer;
+
+function sel(cls){ return [...document.querySelectorAll('.'+cls+':checked')].map(c=>c.value); }
+
+function handleAll(g, cb){
+  document.querySelectorAll('.'+g+'-opt').forEach(c=>c.checked=cb.checked);
+  updateLabel(g); scheduleLoad();
+}
+function handleOpt(g){
+  const opts=[...document.querySelectorAll('.'+g+'-opt')];
+  document.getElementById('all-'+g).checked = opts.every(c=>c.checked);
+  updateLabel(g); scheduleLoad();
+}
+function updateLabel(g){
+  const opts=[...document.querySelectorAll('.'+g+'-opt:checked')].map(c=>c.value);
+  const total=[...document.querySelectorAll('.'+g+'-opt')].length;
+  const map = g==='app' ? APP_LABELS : CORE_LABELS;
+  document.getElementById('lbl-'+g).textContent = opts.length===total
+    ? (g==='app'?'Todas':'Todos')
+    : opts.map(v=>map[v]||v).join(', ');
+}
+
+function toggleDD(g){
+  const dd=document.getElementById('dd-'+g);
+  const btn=document.getElementById('btn-'+g);
+  const was=dd.classList.contains('open');
+  closeAll();
+  if(!was){ dd.classList.add('open'); btn.classList.add('open'); }
+}
+function closeAll(){
+  document.querySelectorAll('.ms-dd').forEach(d=>d.classList.remove('open'));
+  document.querySelectorAll('.ms-btn').forEach(b=>b.classList.remove('open'));
+}
+document.addEventListener('click', e=>{ if(!e.target.closest('.ms-wrap')) closeAll(); });
+
+function scheduleLoad(){
+  clearTimeout(fetchTimer);
+  fetchTimer = setTimeout(loadData, 300);
+}
+
+function fmtMxn(cents){
+  return '$' + (cents/100).toLocaleString('es-MX', {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+
+async function loadData(){
+  const df = document.getElementById('dt-from').value;
+  const dt = document.getElementById('dt-to').value;
+  if(!df || !dt) return;
+
+  const apps  = sel('app-opt').join(',');
+  const cores = sel('core-opt').join(',');
+  const url   = `/admin/reports/consumption/data?date_from=${df}&date_to=${dt}&apps=${encodeURIComponent(apps)}&cores=${encodeURIComponent(cores)}`;
+
+  document.getElementById('spinner').style.display='block';
+  document.getElementById('dtable').innerHTML='';
+
+  let data;
+  try {
+    const r = await fetch(url);
+    if(!r.ok) throw new Error(r.status);
+    data = await r.json();
+  } catch(e) {
+    document.getElementById('spinner').style.display='none';
+    document.getElementById('dtable').innerHTML='<tr><td colspan="7" class="empty">Error al cargar datos</td></tr>';
+    return;
+  }
+  document.getElementById('spinner').style.display='none';
+
+  const m = data.metrics;
+  document.getElementById('m-ing').textContent  = fmtMxn(m.total_cents);
+  document.getElementById('m-ing2').textContent = m.tx_count + ' líneas';
+  document.getElementById('m-tx').textContent   = m.tx_count;
+  document.getElementById('m-cl').textContent   = m.unique_clients;
+  document.getElementById('m-top').textContent  = m.top_service;
+  document.getElementById('m-top2').textContent = fmtMxn(m.top_service_cents) + ' · ' + m.top_service_pct + '%';
+
+  const byApp = data.by_app;
+  donutChart.data.datasets[0].data = byApp.map(a=>a.cents);
+  donutChart.data.datasets[0].backgroundColor = byApp.map(a=>APP_COLORS[a.app]||'#94a3b8');
+  donutChart.update();
+  document.getElementById('leg-app').innerHTML = byApp.length
+    ? byApp.map(a=>`<span><span class="dot" style="background:${APP_COLORS[a.app]||'#94a3b8'}"></span>${APP_LABELS[a.app]||a.app} · ${fmtMxn(a.cents)}</span>`).join('')
+    : '<span style="color:#94a3b8">sin datos</span>';
+
+  const bySvc = data.by_service;
+  barChart.data.labels = bySvc.map(s=>s.service);
+  barChart.data.datasets[0].data = bySvc.map(s=>parseFloat((s.cents/100).toFixed(2)));
+  barChart.update();
+
+  const rows = data.rows;
+  document.getElementById('tbl-cnt').textContent = rows.length + ' registro' + (rows.length!==1?'s':'');
+  if(!rows.length){
+    document.getElementById('dtable').innerHTML='<tr><td colspan="7" class="empty">Sin datos para esta selección</td></tr>';
+    return;
+  }
+
+  function appBadge(a){
+    const cls='b-'+(a||'').replace(/[^a-z]/g,'');
+    const lbl=APP_LABELS[a]||a;
+    return `<span class="badge ${cls}">${lbl}</span>`;
+  }
+
+  document.getElementById('dtable').innerHTML = rows.map(r=>`
+    <tr>
+      <td>${r.client}</td>
+      <td>${appBadge(r.app)}</td>
+      <td><span class="b-core">${CORE_LABELS[r.core]||r.core}</span></td>
+      <td style="font-family:monospace">${r.service}</td>
+      <td>${r.units}</td>
+      <td>${r.fecha.slice(5)}</td>
+      <td style="text-align:right;font-weight:500">${fmtMxn(r.cents)}</td>
+    </tr>`).join('');
+}
+
+document.addEventListener('DOMContentLoaded', ()=>{
+  donutChart = new Chart(document.getElementById('donut'), {
+    type: 'doughnut',
+    data: { datasets:[{ data:[], backgroundColor:[], borderWidth:0, hoverOffset:3 }] },
+    options: { responsive:true, maintainAspectRatio:false, cutout:'72%',
+      plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>' '+fmtMxn(c.raw*100)}} } }
+  });
+  barChart = new Chart(document.getElementById('barSvc'), {
+    type: 'bar',
+    data: { labels:[], datasets:[{ data:[], backgroundColor:'#6366f1', borderRadius:3, barThickness:14 }] },
+    options: { indexAxis:'y', responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{display:false}, tooltip:{callbacks:{label:c=>' $'+c.raw.toFixed(2)}} },
+      scales:{
+        x:{ grid:{display:false}, ticks:{font:{size:10}, callback:v=>'$'+v} },
+        y:{ grid:{display:false}, ticks:{font:{size:10,family:'monospace'}, maxTicksLimit:5} }
+      }
+    }
+  });
+
+  const now = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  const today = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;
+  const firstOfMonth = `${now.getFullYear()}-${pad(now.getMonth()+1)}-01`;
+  document.getElementById('dt-from').value = firstOfMonth;
+  document.getElementById('dt-to').value   = today;
+
+  document.getElementById('dt-from').addEventListener('change', scheduleLoad);
+  document.getElementById('dt-to').addEventListener('change', scheduleLoad);
+
+  loadData();
+});
+</script>
+{% endblock %}

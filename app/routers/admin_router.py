@@ -5,7 +5,7 @@ UI HTML server-side (Jinja2 + HTMX). Acceso restringido a roles internos.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import text
@@ -756,3 +756,123 @@ async def set_default_payment_gateway(
     finally:
         await cli.close()
     return RedirectResponse("/admin/payment-gateways?saved=default_ok", status_code=303)
+
+
+# ---------------------------------------------------------------------
+# reportes de consumo
+# ---------------------------------------------------------------------
+
+
+@router.get("/reports/consumption", response_class=HTMLResponse)
+async def reports_consumption_page(
+    request: Request,
+    user: CurrentUser = Depends(_OPS),
+    db: AsyncSession = Depends(get_db),
+) -> HTMLResponse:
+    oc, op = _org_scope(user, "s.organization_id")
+    cores_rows = (await db.execute(text(f"""
+        SELECT DISTINCT source_core FROM services
+        WHERE source_core IS NOT NULL{oc}
+        ORDER BY source_core
+    """), op)).scalars().all()
+    return templates.TemplateResponse(
+        request, "admin/reports.html",
+        {"user": user, "available_cores": list(cores_rows)},
+    )
+
+
+@router.get("/reports/consumption/data")
+async def reports_consumption_data(
+    request: Request,
+    date_from: str = Query(...),
+    date_to: str = Query(...),
+    apps: str = Query(""),
+    cores: str = Query(""),
+    user: CurrentUser = Depends(_OPS),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    oc, op = _org_scope(user, "l.organization_id")
+    filters = [
+        "l.kind = 'debit'",
+        "l.created_at::date BETWEEN :df AND :dt",
+    ]
+    params: dict = {**op, "df": date_from, "dt": date_to}
+
+    app_list = [a.strip() for a in apps.split(",") if a.strip()]
+    core_list = [c.strip() for c in cores.split(",") if c.strip()]
+
+    if app_list:
+        phs = ", ".join(f":ap{i}" for i in range(len(app_list)))
+        filters.append(f"COALESCE(s.app_slug, '—') IN ({phs})")
+        for i, a in enumerate(app_list):
+            params[f"ap{i}"] = a
+
+    if core_list:
+        phs = ", ".join(f":co{i}" for i in range(len(core_list)))
+        filters.append(f"COALESCE(s.source_core, '—') IN ({phs})")
+        for i, c in enumerate(core_list):
+            params[f"co{i}"] = c
+
+    where = " AND ".join(filters)
+
+    rows = (await db.execute(text(f"""
+        SELECT
+          c.name                               AS client_name,
+          COALESCE(s.app_slug, '—')            AS app_slug,
+          COALESCE(s.source_core, '—')         AS core,
+          l.service_code,
+          l.created_at::date                   AS fecha,
+          COALESCE(SUM(l.units), 0)            AS units,
+          COALESCE(SUM(l.amount_cents), 0)     AS cents
+        FROM prepaid_ledger l
+        JOIN clients c ON c.id = l.client_id
+        LEFT JOIN services s
+          ON s.code = l.service_code
+          AND s.organization_id = l.organization_id
+        WHERE {where}
+        GROUP BY c.name, s.app_slug, s.source_core, l.service_code, l.created_at::date
+        ORDER BY cents DESC
+        LIMIT 500
+    """), params)).mappings().all()
+
+    total_cents = sum(int(r["cents"]) for r in rows)
+    unique_clients = len({r["client_name"] for r in rows})
+
+    by_app: dict[str, int] = {}
+    by_svc: dict[str, int] = {}
+    for r in rows:
+        by_app[r["app_slug"]] = by_app.get(r["app_slug"], 0) + int(r["cents"])
+        by_svc[r["service_code"]] = by_svc.get(r["service_code"], 0) + int(r["cents"])
+
+    top_entry = max(by_svc.items(), key=lambda x: x[1], default=("—", 0))
+
+    return {
+        "metrics": {
+            "total_cents": total_cents,
+            "tx_count": len(rows),
+            "unique_clients": unique_clients,
+            "top_service": top_entry[0],
+            "top_service_cents": top_entry[1],
+            "top_service_pct": round(top_entry[1] / total_cents * 100) if total_cents else 0,
+        },
+        "by_app": [
+            {"app": k, "cents": v}
+            for k, v in sorted(by_app.items(), key=lambda x: -x[1])
+        ],
+        "by_service": [
+            {"service": k, "cents": v}
+            for k, v in sorted(by_svc.items(), key=lambda x: -x[1])[:5]
+        ],
+        "rows": [
+            {
+                "client": r["client_name"],
+                "app": r["app_slug"],
+                "core": r["core"],
+                "service": r["service_code"],
+                "fecha": str(r["fecha"]),
+                "units": int(r["units"]),
+                "cents": int(r["cents"]),
+            }
+            for r in rows
+        ],
+    }
