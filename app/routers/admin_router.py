@@ -830,7 +830,7 @@ async def reports_consumption_data(
           ON s.code = l.service_code
           AND s.organization_id = l.organization_id
         WHERE {where}
-        GROUP BY c.name, s.app_slug, s.source_core, l.service_code, l.created_at::date
+        GROUP BY COALESCE(c.trade_name, c.legal_name), s.app_slug, s.source_core, l.service_code, l.created_at::date
         ORDER BY cents DESC
         LIMIT 500
     """), params)).mappings().all()
@@ -839,9 +839,11 @@ async def reports_consumption_data(
     unique_clients = len({r["client_name"] for r in rows})
 
     by_app: dict[str, int] = {}
+    by_core: dict[str, int] = {}
     by_svc: dict[str, int] = {}
     for r in rows:
         by_app[r["app_slug"]] = by_app.get(r["app_slug"], 0) + int(r["cents"])
+        by_core[r["core"]] = by_core.get(r["core"], 0) + int(r["cents"])
         by_svc[r["service_code"]] = by_svc.get(r["service_code"], 0) + int(r["cents"])
 
     top_entry = max(by_svc.items(), key=lambda x: x[1], default=("—", 0))
@@ -858,6 +860,10 @@ async def reports_consumption_data(
         "by_app": [
             {"app": k, "cents": v}
             for k, v in sorted(by_app.items(), key=lambda x: -x[1])
+        ],
+        "by_core": [
+            {"core": k, "cents": v}
+            for k, v in sorted(by_core.items(), key=lambda x: -x[1])
         ],
         "by_service": [
             {"service": k, "cents": v}
