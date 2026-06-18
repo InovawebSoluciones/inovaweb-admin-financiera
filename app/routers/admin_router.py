@@ -769,7 +769,7 @@ async def reports_consumption_page(
     user: CurrentUser = Depends(_OPS),
     db: AsyncSession = Depends(get_db),
 ) -> HTMLResponse:
-    oc, op = _org_scope(user, "s.organization_id")
+    oc, op = _org_scope(user, "organization_id")
     cores_rows = (await db.execute(text(f"""
         SELECT DISTINCT source_core FROM services
         WHERE source_core IS NOT NULL{oc}
