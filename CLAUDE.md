@@ -314,7 +314,7 @@ pospuesta hasta demanda real.
 
 ## 12. ESTADO ACTUAL Y PENDIENTES (actualizar al cerrar cada sesion)
 
-**Sesion al: 2026-06-17. Foco: motor SaaS multi-tenant + Stripe E2E + columna app_slug + reportes de consumo.**
+**Sesion al: 2026-06-18. Foco: gráfica pastel + formularios catálogo + fix seguridad multi-tenant + promo NYM.**
 
 > **ACTUALIZACION 2026-06-08 (sesion LiaForge) — leer esto primero:**
 > - **P2 (consumo E2E) HECHO y EN PROD:** IA Perplexity via proxy nuevo del Medidor (/llm/perplexity, mide+debita wallet client-5; PROXY_DEFAULT_WALLETS factura al cliente) + email via endpoint nuevo Centro POST /v1/messages/record (Scraping send_email lo reporta) -> sync CAF->Finanzas (source=medidor/messages) por cron */5. Verificado: $500 -> $497.69. Key DeepSeek corregida.
@@ -387,26 +387,30 @@ CAF clients.id <-> external_user_id "client-{id}" en cada core.
 - **Tarea pendiente #1:** webhook Stripe LIVE antes de salir a producción.
 - **Tarea pendiente #2:** "Error al cargar datos" en reportes — investigar 500 residual.
 
-### ✅ Docs formales AL DIA (traslada 2026-06-17, en curso)
-README/ADR/RUNBOOK/DEPLOY/CHANGELOG/OWASP en regeneración. ADR-026/027 nuevos (app_slug + reportes). VPS==GitHub b8dcfba.
+### ✅ Sesion 2026-06-18 — Gráfica por core + formularios catálogo + fix seguridad + promo NYM (commits af45cfe, 6faaeb5, 82d758d, 35e63b7, d5853b3)
+- **Gráfica pastel por core:** Chart.js pie añadida a `/admin/reports/consumption` con colores por core. `by_core` en response JSON.
+- **Formularios alta servicios/planes:** `POST /admin/catalog/services` y `POST /admin/catalog/plans` con org isolation, validación enum, PRG flash.
+- **CRÍTICO FIX (6faaeb5):** aislamiento multi-tenant en `/reports/consumption/data` — `oc` calculado pero nunca añadido al WHERE. Verificado con org5 (acmecorp).
+- **Fix promo plataforma (d5853b3):** `WHERE organization_id IN (:org, 1)` — promos de org 1 aplican a todos los tenants.
+- **Backfill NYM:** bonos retroactivos aplicados a clientes 20 y 21 (+62 500 cr c/u, saldo final 312 500 cr).
+- **ADR-028/029/030** añadidos. OWASP addendum 2026-06-18.
 
-### Estado de repos (2026-06-17)
-- **CAF:** VPS == GitHub (b8dcfba). Deploy = `git pull` + `docker compose up -d --build`.
-- **Hub:** VPS == GitHub (5d53a50 CAF fix; 1619dae Stripe). Deploy = `docker compose up -d --build hub`.
-- **Scraping/LiaForge:** deploy = scp. No git pull en VPS.
-- **Centro/Medidor/Finanzas:** sin cambios de código en estas sesiones.
+### Estado de repos (2026-06-18)
+- **CAF:** VPS == GitHub (d5853b3). Deploy = `git pull` + `docker compose up -d --build`.
+- **Hub:** VPS == GitHub (5d53a50/1619dae). Deploy = `docker compose up -d --build hub`.
+- **Scraping/LiaForge:** deploy = scp. No git pull en VPS. (auth.py sin cambio tras revert).
+- **Centro/Medidor/Finanzas:** sin cambios de código.
 
 ### Pendientes (orden)
 | # | Pendiente | Owner |
 |---|---|---|
-| P1 | Endpoint `POST /v1/messages/record` en Centro + nodo n8n (registrar envios email/whatsapp/sms; destinatario+sent_at+client_id; tenant via key; idempotente source_ref) | diferido por usuario |
-| P2 | **CONSUMO E2E — HECHO Y EN PROD (2026-06-08):** IA (Scraping->proxy Medidor /llm/perplexity->debita wallet client-5) + email (send_email->Centro /v1/messages/record) -> sync cron */5 debita wallet + asiento Finanzas (source=medidor/messages). Verificado $500->$497.69. | OK HECHO |
-| P3 | Proveedor de email en Centro (`tenant_channel_credentials` VACIO) -> Resend o SMTP M365 | usuario (credencial) |
-| P4 | Push del Hub a GitHub (hoy solo en VPS) | pendiente |
-| P5 | Deploy key de `scraping-inovaweb` en el VPS (para habilitar `git pull` de Scraping; hoy solo scp) | usuario (GitHub) |
-| P6 | Docs formales 2026-06-17 | ✅ en curso (traslada activo) |
+| P1 | Endpoint `POST /v1/messages/record` en Centro + nodo n8n | diferido |
+| P3 | Proveedor de email en Centro (Resend o SMTP M365) | usuario (credencial) |
+| P4 | Push del Hub a GitHub | pendiente |
+| P5 | Deploy key `scraping-inovaweb` en VPS | usuario (GitHub) |
 | T1 | Webhook Stripe LIVE antes de producción | pendiente |
-| T2 | Fix "Error al cargar datos" reportes (500 residual) | pendiente |
+| T2 | Fix "Error al cargar datos" reportes (resuelto: alias + GROUP BY; cerrar) | ✅ RESUELTO |
+| LF | Fix `promo_code` en `auth.py` de LiaForge (instrucción pendiente de aplicar) | equipo LiaForge |
 | 1 | DNS/TLS admin/app.inovaweb.com.mx | usuario |
 | F | CFDI 4.0 via Ecofile | diferido |
 

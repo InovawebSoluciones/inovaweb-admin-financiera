@@ -7,6 +7,26 @@ Orden cronológico inverso: lo más reciente primero.
 
 ---
 
+## [0.9.0] — 2026-06-18 — Gráfica por core + formularios catálogo + fix seguridad multi-tenant
+
+### Agregado
+- **Formulario alta de servicio (`POST /admin/catalog/services`)**: el panel admin ahora permite crear servicios cobrables directamente desde la UI. Validación de `source_core` contra enum fijo, conversión MXN→cents, org isolation desde sesión, flash messages PRG. Template `services.html` reescrito con grid de 6 columnas.
+- **Formulario alta de plan (`POST /admin/catalog/plans`)**: idéntico patrón al de servicios. Template `plans.html` reescrito con el mismo layout.
+- **Gráfica de pastel por core en reportes de consumo**: Chart.js tipo `pie` añadida a `GET /admin/reports/consumption`. Colores por core: medidor=verde, messages=naranja, internal=violeta, hub=cyan, finanzas=rosa. Campo `by_core` añadido al JSON de `consumption/data`.
+
+### Corregido
+- **`GROUP BY` en reportes (`COALESCE(c.trade_name, c.legal_name)`)** (commit `af45cfe`): la columna `c.name` no existe en la tabla `clients`; corregido a `COALESCE(c.trade_name, c.legal_name)` en la cláusula `GROUP BY`.
+- **Alias `s` en `_org_scope` de `reports_consumption_page`** (commit `82d758d`): `_org_scope(user, "s.organization_id")` causaba 500 porque `services` no lleva alias `s` en ese query; corregido a `_org_scope(user, "organization_id")`.
+- **Promo codes de plataforma (org 1) ahora aplican a todos los tenants** (commit `d5853b3`): query cambiado de `organization_id = :org` a `IN (:org, 1) ORDER BY organization_id DESC LIMIT 1`. La promo del tenant tiene precedencia si existe código duplicado.
+
+### Seguridad
+- **CRÍTICO — aislamiento multi-tenant en `/admin/reports/consumption/data`** (commit `6faaeb5`): `_org_scope()` calculaba `oc` pero nunca lo añadía al `WHERE`; un admin de org5 podía ver consumo de todos los tenants. Fix: `if oc: filters.append("l.organization_id = :_org")`. Verificado con auditoría de independencia: org5 (`acmecorp`) antes del fix → `total_cents=31 380`; después → `0` ✅.
+
+### Datos (operación manual)
+- **Corrección retroactiva de bonos NYM** para clientes 20 y 21 (`info2@webescolar.com.mx`, `info2b@webescolar.com.mx`): bono 25% sobre plan `liaforge_growth` = +62 500 cr c/u. Aplicados vía `INSERT` en `prepaid_ledger` con `idempotency_key = 'promo-nym-backfill-{id}'`. Saldo final: 312 500 cr c/u.
+
+---
+
 ## [0.8.0] — 2026-06-17 — app_slug + Stripe E2E + reportes de consumo
 
 ### Agregado
