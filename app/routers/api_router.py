@@ -525,9 +525,11 @@ async def api_app_onboard(
         promo = (await db.execute(text("""
             SELECT id, discount_pct, distributor_id, max_uses, uses_count
             FROM promotions
-            WHERE organization_id=:org AND code=:code AND is_active=true
+            WHERE organization_id IN (:org, 1) AND code=:code AND is_active=true
               AND now() BETWEEN valid_from AND valid_to
               AND discount_pct IS NOT NULL
+            ORDER BY organization_id DESC
+            LIMIT 1
         """), {"org": org, "code": body.promo_code.strip().upper()})).mappings().first()
         if promo and (promo["max_uses"] is None or promo["uses_count"] < promo["max_uses"]):
             # cuenta el uso de forma atómica (respeta max_uses ante carreras)
