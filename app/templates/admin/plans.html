@@ -1,24 +1,94 @@
 {% extends "admin/_layout.html" %}
 {% block heading %}Planes{% endblock %}
 {% block content %}
+
+{% set msgs = {'ok':'Plan creado correctamente.','error_dup':'Ya existe un plan con ese código en esta organización.','error_precio':'Precio o créditos no válidos.'} %}
+{% if saved in msgs %}
+<div class="mb-4 rounded text-sm px-4 py-2 {% if saved=='ok' %}bg-green-50 border border-green-200 text-green-700{% else %}bg-red-50 border border-red-200 text-red-700{% endif %}">
+  {{ msgs[saved] }}
+</div>
+{% endif %}
+
+<div class="bg-white shadow-sm rounded p-4 mb-5">
+  <div class="font-semibold text-slate-700 mb-1">Nuevo plan</div>
+  <p class="text-xs text-slate-400 mb-3">Define la cuota mensual y los créditos incluidos. Los servicios se asocian desde la BD.</p>
+  <form method="post" action="/admin/catalog/plans" class="grid md:grid-cols-6 gap-2 text-sm">
+    <div class="md:col-span-1">
+      <label class="block text-xs text-slate-500 mb-1">Código *</label>
+      <input type="text" name="code" required placeholder="plan_basico"
+             pattern="[a-z0-9_\-]+" title="Solo minúsculas, números y guiones"
+             class="w-full border rounded px-2 py-1.5 font-mono">
+    </div>
+    <div class="md:col-span-2">
+      <label class="block text-xs text-slate-500 mb-1">Nombre *</label>
+      <input type="text" name="name" required placeholder="Plan Básico"
+             class="w-full border rounded px-2 py-1.5">
+    </div>
+    <div class="md:col-span-3">
+      <label class="block text-xs text-slate-500 mb-1">Descripción</label>
+      <input type="text" name="description" placeholder="Descripción opcional"
+             class="w-full border rounded px-2 py-1.5">
+    </div>
+    <div class="md:col-span-1">
+      <label class="block text-xs text-slate-500 mb-1">Cuota mensual MXN</label>
+      <input type="number" name="monthly_fee_mxn" value="0" min="0" step="0.01"
+             class="w-full border rounded px-2 py-1.5">
+    </div>
+    <div class="md:col-span-1">
+      <label class="block text-xs text-slate-500 mb-1">Créditos incluidos</label>
+      <input type="number" name="monthly_credit_cents" value="0" min="0" step="1"
+             placeholder="centavos" class="w-full border rounded px-2 py-1.5">
+    </div>
+    <div class="md:col-span-1">
+      <label class="block text-xs text-slate-500 mb-1">App (opcional)</label>
+      <select name="app_slug" class="w-full border rounded px-2 py-1.5">
+        <option value="">— ninguna —</option>
+        <option value="liaforge">liaforge</option>
+        <option value="swigg">swigg</option>
+        <option value="caf">caf</option>
+      </select>
+    </div>
+    <div class="md:col-span-1 flex items-end pb-1">
+      <label class="flex items-center gap-2 text-slate-600 cursor-pointer">
+        <input type="checkbox" name="is_free" class="rounded"> Plan gratuito
+      </label>
+    </div>
+    <div class="md:col-span-6 flex justify-end">
+      <button class="bg-[#4F46E5] text-white rounded px-5 py-1.5 hover:bg-[#4338CA] text-sm">
+        Crear plan
+      </button>
+    </div>
+  </form>
+</div>
+
 <div class="bg-white shadow-sm rounded overflow-x-auto">
   <table class="w-full text-sm">
     <thead class="bg-slate-100 text-xs uppercase text-slate-600">
-      <tr><th class="px-3 py-2 text-left">Codigo</th><th class="px-3 py-2 text-left">Nombre</th>
+      <tr>
+        <th class="px-3 py-2 text-left">Código</th>
+        <th class="px-3 py-2 text-left">Nombre</th>
         <th class="px-3 py-2 text-left">App</th>
-        <th class="px-3 py-2 text-left">Servicio / Producto</th>
+        <th class="px-3 py-2 text-left">Servicios asociados</th>
         <th class="px-3 py-2 text-right">Cuota mensual</th>
-        <th class="px-3 py-2 text-left">Free</th><th class="px-3 py-2 text-left">Activo</th></tr>
+        <th class="px-3 py-2 text-right">Créditos</th>
+        <th class="px-3 py-2 text-left">Free</th>
+        <th class="px-3 py-2 text-left">Activo</th>
+      </tr>
     </thead>
     <tbody>
       {% for r in rows %}
-      <tr class="border-t"><td class="px-3 py-2 font-mono">{{ r.code }}</td>
+      <tr class="border-t">
+        <td class="px-3 py-2 font-mono">{{ r.code }}</td>
         <td class="px-3 py-2">{{ r.name }}</td>
         <td class="px-3 py-2 font-mono text-xs text-slate-500">{{ r.app_slug or '—' }}</td>
         <td class="px-3 py-2 font-mono text-xs text-slate-600">{{ r.servicios }}</td>
         <td class="px-3 py-2 text-right">${{ '%.2f'|format(r.monthly_fee_cents/100) }}</td>
-        <td class="px-3 py-2">{{ 'si' if r.is_free else 'no' }}</td>
-        <td class="px-3 py-2">{{ 'si' if r.is_active else 'no' }}</td></tr>
+        <td class="px-3 py-2 text-right">{{ r.monthly_credit_cents or '—' }}</td>
+        <td class="px-3 py-2">{{ 'sí' if r.is_free else 'no' }}</td>
+        <td class="px-3 py-2">{{ 'sí' if r.is_active else 'no' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" class="px-3 py-6 text-center text-slate-400 text-sm">Sin planes. Crea el primero arriba.</td></tr>
       {% endfor %}
     </tbody>
   </table>

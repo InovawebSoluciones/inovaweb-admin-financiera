@@ -403,6 +403,7 @@ async def list_products(
 @router.get("/catalog/services", response_class=HTMLResponse)
 async def list_services(
     request: Request,
+    saved: str = Query(""),
     user: CurrentUser = Depends(_OPS),
     db: AsyncSession = Depends(get_db),
 ) -> HTMLResponse:
@@ -411,13 +412,56 @@ async def list_services(
         f"SELECT * FROM services WHERE TRUE{oc} ORDER BY name"
     ), op)).mappings().all()
     return templates.TemplateResponse(
-        request, "admin/services.html", {"user": user, "rows": list(rows)},
+        request, "admin/services.html", {"user": user, "rows": list(rows), "saved": saved},
     )
+
+
+@router.post("/catalog/services", response_class=HTMLResponse)
+async def create_service(
+    request: Request,
+    user: CurrentUser = Depends(_OPS),
+    db: AsyncSession = Depends(get_db),
+    code: str = Form(...),
+    name: str = Form(...),
+    source_core: str = Form(...),
+    unit: str = Form("unidad"),
+    unit_price_mxn: str = Form(...),
+    app_slug: str = Form(""),
+) -> HTMLResponse:
+    """Alta de un servicio cobrable para la organización del operador."""
+    valid_cores = {"medidor", "hub", "messages", "finanzas", "internal"}
+    if source_core not in valid_cores:
+        return RedirectResponse("/admin/catalog/services?saved=error_core", status_code=303)
+    try:
+        price_cents = round(float(unit_price_mxn) * 100)
+        if price_cents < 0:
+            raise ValueError
+    except (ValueError, TypeError):
+        return RedirectResponse("/admin/catalog/services?saved=error_precio", status_code=303)
+    try:
+        await db.execute(text("""
+            INSERT INTO services (code, name, source_core, unit, unit_price_cents, app_slug, organization_id)
+            VALUES (:code, :name, :core, :unit, :price, :app, :org)
+        """), {
+            "code": code.strip().lower(),
+            "name": name.strip(),
+            "core": source_core,
+            "unit": unit.strip() or "unidad",
+            "price": price_cents,
+            "app": app_slug.strip() or None,
+            "org": user.organization_id,
+        })
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        return RedirectResponse("/admin/catalog/services?saved=error_dup", status_code=303)
+    return RedirectResponse("/admin/catalog/services?saved=ok", status_code=303)
 
 
 @router.get("/catalog/plans", response_class=HTMLResponse)
 async def list_plans(
     request: Request,
+    saved: str = Query(""),
     user: CurrentUser = Depends(_OPS),
     db: AsyncSession = Depends(get_db),
 ) -> HTMLResponse:
@@ -433,8 +477,51 @@ async def list_plans(
         ORDER BY p.name
     """), op)).mappings().all()
     return templates.TemplateResponse(
-        request, "admin/plans.html", {"user": user, "rows": list(rows)},
+        request, "admin/plans.html", {"user": user, "rows": list(rows), "saved": saved},
     )
+
+
+@router.post("/catalog/plans", response_class=HTMLResponse)
+async def create_plan(
+    request: Request,
+    user: CurrentUser = Depends(_OPS),
+    db: AsyncSession = Depends(get_db),
+    code: str = Form(...),
+    name: str = Form(...),
+    description: str = Form(""),
+    monthly_fee_mxn: str = Form("0"),
+    monthly_credit_cents: str = Form("0"),
+    is_free: str = Form(""),
+    app_slug: str = Form(""),
+) -> HTMLResponse:
+    """Alta de un plan de precios para la organización del operador."""
+    try:
+        fee_cents = round(float(monthly_fee_mxn) * 100)
+        credits = int(monthly_credit_cents)
+        if fee_cents < 0 or credits < 0:
+            raise ValueError
+    except (ValueError, TypeError):
+        return RedirectResponse("/admin/catalog/plans?saved=error_precio", status_code=303)
+    try:
+        await db.execute(text("""
+            INSERT INTO plans (code, name, description, monthly_fee_cents,
+                               monthly_credit_cents, is_free, app_slug, organization_id)
+            VALUES (:code, :name, :desc, :fee, :credits, :free, :app, :org)
+        """), {
+            "code": code.strip().lower(),
+            "name": name.strip(),
+            "desc": description.strip() or None,
+            "fee": fee_cents,
+            "credits": credits if credits > 0 else None,
+            "free": (is_free == "on"),
+            "app": app_slug.strip() or None,
+            "org": user.organization_id,
+        })
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        return RedirectResponse("/admin/catalog/plans?saved=error_dup", status_code=303)
+    return RedirectResponse("/admin/catalog/plans?saved=ok", status_code=303)
 
 
 @router.get("/catalog/promotions", response_class=HTMLResponse)
