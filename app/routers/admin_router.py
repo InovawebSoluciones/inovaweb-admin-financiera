@@ -796,6 +796,8 @@ async def reports_consumption_data(
         "l.kind = 'debit'",
         "l.created_at::date BETWEEN :df AND :dt",
     ]
+    if oc:  # non-platform user: enforce tenant isolation
+        filters.append("l.organization_id = :_org")
     params: dict = {**op, "df": date_from, "dt": date_to}
 
     app_list = [a.strip() for a in apps.split(",") if a.strip()]
