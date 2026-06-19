@@ -471,8 +471,68 @@ async def _process_wallet_credit(
                     "purpose": ev["purpose"]},
         request_id=request_id,
     )
+
+    # 6) comisión de referido (best-effort; nunca bloquea el pago confirmado)
+    try:
+        await _maybe_accrue_commission(
+            db, client_id=client_id, hub_txn_id=str(hub_txn_id),
+            amount_cents=amount_cents,
+        )
+    except Exception as e:  # noqa: BLE001
+        log.warning("commission_accrual_skipped",
+                    extra={"error": str(e), "caf_client_id": client_id,
+                           "hub_txn_id": hub_txn_id})
+
     return PaidResult(status="credited", recharge_id=recharge_id,
                       payment_inserted=True, credited=True)
+
+
+async def _maybe_accrue_commission(
+    db: AsyncSession,
+    *,
+    client_id: int,
+    hub_txn_id: str,
+    amount_cents: int,
+) -> None:
+    """Acumula comisión para el distribuidor referidor en la primera recarga.
+
+    Solo actúa si el cliente tiene referral_distributor_id y este es su primer
+    pago confirmado. Idempotente: uq_distributor_commissions_txn evita doble registro.
+    """
+    row = (await db.execute(text("""
+        SELECT c.referral_distributor_id, d.commission_pct, d.organization_id
+        FROM clients c
+        JOIN distributors d ON d.id = c.referral_distributor_id
+        WHERE c.id = :cid AND c.referral_distributor_id IS NOT NULL
+          AND d.is_active AND d.commission_pct > 0
+    """), {"cid": client_id})).mappings().first()
+    if not row:
+        return
+
+    # primer pago = exactamente 1 fila en payments para este cliente
+    count = (await db.execute(
+        text("SELECT COUNT(*) FROM payments WHERE client_id = :c"),
+        {"c": client_id},
+    )).scalar()
+    if count != 1:
+        return
+
+    dist_id = row["referral_distributor_id"]
+    pct = float(row["commission_pct"])
+    commission_cents = round(amount_cents * pct / 100)
+
+    await db.execute(text("""
+        INSERT INTO distributor_commissions
+          (distributor_id, client_id, payment_hub_txn, base_cents,
+           commission_pct, commission_cents, organization_id)
+        VALUES (:d, :c, :h, :base, :pct, :comm, :org)
+        ON CONFLICT (distributor_id, payment_hub_txn) DO NOTHING
+    """), {"d": dist_id, "c": client_id, "h": hub_txn_id,
+           "base": amount_cents, "pct": pct, "comm": commission_cents,
+           "org": row["organization_id"]})
+    log.info("commission_accrued",
+             extra={"distributor_id": dist_id, "client_id": client_id,
+                    "commission_cents": commission_cents, "pct": pct})
 
 
 async def _process_invoice_payment(

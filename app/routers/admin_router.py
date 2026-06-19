@@ -971,3 +971,119 @@ async def reports_consumption_data(
             for r in rows
         ],
     }
+
+
+# =====================================================================
+# DISTRIBUIDORES — módulo de referidos y comisiones
+# =====================================================================
+
+@router.get("/distributors", response_class=HTMLResponse)
+async def list_distributors(
+    request: Request,
+    user: CurrentUser = Depends(_OPS),
+    db: AsyncSession = Depends(get_db),
+) -> HTMLResponse:
+    oc, op = _org_scope(user, "d.organization_id")
+    rows = (await db.execute(text(f"""
+        SELECT d.id, d.name, d.referral_code, d.commission_pct, d.is_active,
+               COUNT(dc.id) FILTER (WHERE dc.status = 'pending') AS pending_count,
+               COALESCE(SUM(dc.commission_cents) FILTER (WHERE dc.status = 'pending'), 0) AS pending_cents,
+               COALESCE(SUM(dc.commission_cents) FILTER (WHERE dc.status = 'paid'), 0) AS paid_cents
+        FROM distributors d
+        LEFT JOIN distributor_commissions dc ON dc.distributor_id = d.id
+        WHERE TRUE{oc}
+        GROUP BY d.id
+        ORDER BY d.name
+    """), op)).mappings().all()
+    return templates.TemplateResponse(
+        request, "admin/distributors.html",
+        {"user": user, "rows": list(rows),
+         "saved": request.query_params.get("saved")},
+    )
+
+
+@router.post("/distributors", response_class=RedirectResponse)
+async def create_distributor_new(
+    request: Request,
+    user: CurrentUser = Depends(_WRITE),
+    db: AsyncSession = Depends(get_db),
+    name: str = Form(...),
+    referral_code: str = Form(...),
+    commission_pct: float = Form(...),
+) -> RedirectResponse:
+    nm = name.strip()
+    rc = referral_code.strip().upper()
+    if not nm or not rc:
+        return RedirectResponse("/admin/distributors?saved=error_campos", status_code=303)
+    if not (0 <= commission_pct <= 100):
+        return RedirectResponse("/admin/distributors?saved=error_pct", status_code=303)
+    await bind_actor(db, actor_user_id=user.id,
+                     actor_ip=request.client.host if request.client else None,
+                     request_id=getattr(request.state, "request_id", None))
+    try:
+        await db.execute(
+            text("""INSERT INTO distributors (name, referral_code, commission_pct, organization_id)
+                    VALUES (:n, :rc, :pct, :org)"""),
+            {"n": nm, "rc": rc, "pct": commission_pct, "org": user.organization_id},
+        )
+    except Exception:
+        return RedirectResponse("/admin/distributors?saved=error_dup", status_code=303)
+    return RedirectResponse("/admin/distributors?saved=ok", status_code=303)
+
+
+@router.get("/distributors/{dist_id}", response_class=HTMLResponse)
+async def distributor_detail(
+    request: Request,
+    dist_id: int,
+    user: CurrentUser = Depends(_OPS),
+    db: AsyncSession = Depends(get_db),
+) -> HTMLResponse:
+    oc, op = _org_scope(user, "d.organization_id")
+    dist = (await db.execute(text(f"""
+        SELECT d.id, d.name, d.referral_code, d.commission_pct, d.is_active,
+               COUNT(DISTINCT c.id) AS clientes_referidos
+        FROM distributors d
+        LEFT JOIN clients c ON c.referral_distributor_id = d.id
+        WHERE d.id = :did{oc}
+        GROUP BY d.id
+    """), {"did": dist_id, **op})).mappings().first()
+    if not dist:
+        raise HTTPException(404, "distribuidor no encontrado")
+
+    comisiones = (await db.execute(text("""
+        SELECT dc.id, dc.commission_cents, dc.base_cents, dc.commission_pct,
+               dc.status, dc.created_at, dc.paid_at, dc.notes, dc.payment_hub_txn,
+               COALESCE(c.trade_name, c.legal_name) AS cliente
+        FROM distributor_commissions dc
+        JOIN clients c ON c.id = dc.client_id
+        WHERE dc.distributor_id = :did
+        ORDER BY dc.created_at DESC
+        LIMIT 200
+    """), {"did": dist_id})).mappings().all()
+    return templates.TemplateResponse(
+        request, "admin/distributor_detail.html",
+        {"user": user, "dist": dict(dist), "comisiones": list(comisiones),
+         "saved": request.query_params.get("saved")},
+    )
+
+
+@router.post("/distributors/{dist_id}/commissions/{cid}/pay",
+             response_class=RedirectResponse)
+async def mark_commission_paid(
+    request: Request,
+    dist_id: int,
+    cid: int,
+    user: CurrentUser = Depends(_WRITE),
+    db: AsyncSession = Depends(get_db),
+    notes: str = Form(default=""),
+) -> RedirectResponse:
+    await bind_actor(db, actor_user_id=user.id,
+                     actor_ip=request.client.host if request.client else None,
+                     request_id=getattr(request.state, "request_id", None))
+    result = await db.execute(text("""
+        UPDATE distributor_commissions
+        SET status = 'paid', paid_at = now(), paid_by_user_id = :u, notes = :n
+        WHERE id = :cid AND distributor_id = :did AND status = 'pending'
+    """), {"cid": cid, "did": dist_id, "u": user.id, "n": notes.strip() or None})
+    saved = "paid_ok" if result.rowcount else "error_estado"
+    return RedirectResponse(f"/admin/distributors/{dist_id}?saved={saved}", status_code=303)

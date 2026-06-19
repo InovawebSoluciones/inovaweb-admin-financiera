@@ -462,7 +462,8 @@ class AppOnboardBody(BaseModel):
     billing_email: EmailStr
     plan_code: str
     external_ref: str | None = None   # id de la empresa en la app (idempotencia + link)
-    promo_code: str | None = None     # código de distribuidor; aplica % al contratar
+    promo_code: str | None = None     # cupón de bono de créditos para el cliente
+    referral_code: str | None = None  # código del distribuidor referidor (genera comisión)
 
 
 class AppOnboardResponse(BaseModel):
@@ -556,6 +557,21 @@ async def api_app_onboard(
             {"c": r.client_id, "org": org, "a": total, "k": grant_key,
              "m": _json.dumps(meta)},
         )
+    # Vincular al distribuidor referidor si se proporcionó código de referido
+    if body.referral_code:
+        ref_code = body.referral_code.strip().upper()
+        dist_id = (await db.execute(text("""
+            SELECT id FROM distributors
+            WHERE UPPER(referral_code) = :c AND is_active
+              AND organization_id IN (:org, 1)
+            LIMIT 1
+        """), {"c": ref_code, "org": org})).scalar()
+        if dist_id:
+            await db.execute(
+                text("UPDATE clients SET referral_distributor_id = :d WHERE id = :c"),
+                {"d": dist_id, "c": r.client_id},
+            )
+
     return AppOnboardResponse(
         client_id=r.client_id, wallet_id=r.wallet_id, plan_code=body.plan_code,
         granted_cents=total, promo_applied=promo_applied,
