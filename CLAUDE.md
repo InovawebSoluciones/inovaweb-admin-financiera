@@ -387,6 +387,13 @@ CAF clients.id <-> external_user_id "client-{id}" en cada core.
 - **Tarea pendiente #1:** webhook Stripe LIVE antes de salir a producción.
 - **Tarea pendiente #2:** "Error al cargar datos" en reportes — investigar 500 residual.
 
+### ✅ Sesion 2026-06-19 (2) — Catálogo LiaForge: imagen_ia + precio validacion_pagina (commit pendiente)
+- **`imagen_ia` (nuevo):** $12 MXN / imagen, `source_core=internal`, `unit=imagen`, `app_slug=liaforge`. Débito desde módulo Brief con idempotency `imagen:{image_id}`. Ya en BD (aplicado por LiaForge).
+- **`validacion_pagina`:** precio bajó 50→30 cents ($0.50→$0.30). Ya en BD.
+- **`validacion_email` — nuevo flujo Enriquecer:** mismo servicio ($0.18), idempotency `valemail:enriquecer:{session_id}`. Solo cambia quién llama; no hay cambio en el CAF.
+- **Sin nuevos endpoints ni migraciones estructurales:** todo usa `/charge` existente. Migración `039` = solo datos, idempotente.
+- **Decisión pendiente negocio:** ¿`validacion_email` ($0.18) o nuevo `validacion_dns` ($0.05) para flujo Enriquecer?
+
 ### ✅ Sesion 2026-06-19 — Módulo de referidos de distribuidores (commit 6fa7043)
 - **Migración 038:** `referral_code` + `commission_pct` en `distributors`; `referral_distributor_id FK` en `clients`; tabla append-only `distributor_commissions` (idempotente por `UNIQUE(distributor_id, payment_hub_txn)`).
 - **`api_router.py`:** `AppOnboardBody.referral_code` opcional; lógica que vincula el cliente al distribuidor tras el onboard.

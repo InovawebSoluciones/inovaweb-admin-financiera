@@ -7,6 +7,21 @@ Orden cronológico inverso: lo más reciente primero.
 
 ---
 
+## [0.10.1] — 2026-06-19 — Catálogo LiaForge: imagen_ia + precio validacion_pagina
+
+### Agregado
+- **Servicio `imagen_ia`** — $12.00 MXN (1 200 cents), `source_core=internal`, `unit=imagen`, `app_slug=liaforge`, org 1. Se debita 1 unidad cada vez que un cliente de LiaForge genera una imagen de email desde el módulo Brief. Idempotency key: `imagen:{image_id}`. Usa endpoint existente `POST /api/v2/clients/{id}/charge`.
+- **Migración `039_catalog_liaforge_imagenia.sql`** — idempotente (`ON CONFLICT DO UPDATE` + `UPDATE WHERE <> 30`); documenta los datos aplicados directamente en BD por LiaForge el 2026-06-19.
+
+### Cambiado
+- **Precio `validacion_pagina`**: $0.50 → $0.30 (30 cents). Aplica a todas las validaciones de URL desde LiaForge.
+- **`validacion_email` — nuevo punto de débito desde flujo Enriquecer**: antes solo se cobraba desde validación masiva de universidades; ahora también desde el flujo Enriquecer de contactos. 1 unidad por email validado, idempotency key `valemail:enriquecer:{session_id}`. Precio actual: $0.18 MXN.
+
+### Decisión de negocio pendiente
+- Confirmar si `validacion_email` en flujo Enriquecer debe cobrar $0.18 (tarifa actual, validación completa) o si se crea un servicio `validacion_dns` a $0.05 por ser validación ligera (solo registro MX). No urgente, no bloquea nada en el CAF hoy.
+
+---
+
 ## [0.10.0] — 2026-06-19 — Módulo de referidos de distribuidores
 
 ### Agregado
