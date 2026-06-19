@@ -7,6 +7,26 @@ Orden cronológico inverso: lo más reciente primero.
 
 ---
 
+## [0.10.0] — 2026-06-19 — Módulo de referidos de distribuidores
+
+### Agregado
+- **Migración 038 (`038_distributor_referrals.sql`)**: `referral_code TEXT` + `commission_pct NUMERIC(5,2)` en `distributors` (índice UNIQUE case-insensitive); `referral_distributor_id BIGINT FK` en `clients`; tabla append-only `distributor_commissions` con idempotencia por `UNIQUE (distributor_id, payment_hub_txn)`.
+- **`POST /api/v2/apps/onboard` — campo `referral_code`**: el body acepta opcionalmente el código de referido del distribuidor. Si existe un distribuidor activo con ese código, se asigna `clients.referral_distributor_id` al crear el cliente. El campo `promo_code` (bono al cliente) es independiente y coexiste.
+- **`_maybe_accrue_commission` en `prepago.py`**: función best-effort invocada tras confirmar la primera recarga del cliente. Verifica `COUNT(payments WHERE client_id) == 1`, calcula `commission_cents = base_cents * commission_pct / 100` y hace `INSERT ... ON CONFLICT DO NOTHING`. Errores loguean `WARNING` sin afectar el pago confirmado.
+- **Panel admin — gestión de distribuidores**:
+  - `GET /admin/distributors`: listado con saldos pendientes/pagados y formulario de creación.
+  - `POST /admin/distributors`: alta con nombre, código y porcentaje de comisión; validación de duplicados y rango de porcentaje.
+  - `GET /admin/distributors/{id}`: detalle con tabla de comisiones por cliente, montos y estado.
+  - `POST /admin/distributors/{id}/commissions/{cid}/pay`: marca una comisión como pagada con nota de referencia de transferencia.
+- **Templates `distributors.html` y `distributor_detail.html`**: UI Jinja2 con Tailwind CSS. Muestra saldos pendientes en ámbar, pagados en verde; botón "Marcar pagada" con confirmación y campo de nota.
+- **Menú "Referidos > Distribuidores"** en `admin/_layout.html`.
+- **Norma Silva configurada**: `referral_code = 'NYM'`, `commission_pct = 25.00` (id=3). Operativa para nuevos registros.
+
+### Validado
+- Simulación E2E en transacción BD revertida: primera recarga de $500 MXN → comisión `$125.00 MXN` con `status = 'pending'` generada correctamente. `ROLLBACK` limpio sin datos residuales.
+
+---
+
 ## [0.9.0] — 2026-06-18 — Gráfica por core + formularios catálogo + fix seguridad multi-tenant
 
 ### Agregado

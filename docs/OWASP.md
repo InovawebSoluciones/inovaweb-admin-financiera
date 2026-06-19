@@ -284,3 +284,137 @@ Sin cambios respecto a auditoría anterior. Observaciones previas vigentes.
 Ninguna crítica. Las observaciones ⚠️ quedan como deuda técnica documentada.
 
 *Addendum OWASP — auditoría 2026-06-17 (app_slug + Stripe E2E + reportes). Commits b8dcfba + 5d53a50.*
+
+---
+
+## Addendum 2026-06-18 — Multi-tenancy enforcement en reportes de consumo
+
+**Commit auditado:** `d5853b3` (CAF)
+**Resultado:** PASS CON OBSERVACIONES
+
+### Resumen
+
+| Categoría | Estado | Hallazgos |
+|---|---|---|
+| SQL Injection | ✅ PASS | Todo `text()` con bind params nominales; filtros dinámicos acumulan strings de condición + dict de params, nunca f-strings con input de usuario |
+| XSS | ✅ PASS | Jinja2 autoescape activo; sin `\|safe` con datos de usuario; Chart.js recibe datos via JSON del endpoint `/data` (no innerHTML) |
+| CSRF | ⚠️ REVISAR | Formularios POST del panel usan `SameSite=Strict` como única mitigación; sin token CSRF explícito (deuda heredada) |
+| Secrets hardcodeados | ✅ PASS | Ningún secreto en código; `.env` en `.gitignore`; `_VALID_PROMOS` en LiaForge es dict de metadatos públicos, no secreto |
+| Sesiones | ✅ PASS | JWT HttpOnly + SameSite=Strict + Secure; access 15 min, refresh 30 días con rotación (ver ⚠️ TTL) |
+| Endpoints sin auth | ✅ PASS | Públicos documentados; `/admin/*`, `/portal/*`, `/api/v2/*`, `/webhooks/*` requieren auth; webhooks validan HMAC |
+| Multi-tenancy (crítico) | ✅ PASS post-fix | Filtro `organization_id` faltante en `/admin/reports/consumption/data` encontrado, corregido y verificado en esta sesión |
+
+### Detalle de hallazgos
+
+#### ✅ SQL Injection — PASS
+Todas las queries usan `text()` de SQLAlchemy con parámetros nominales (`:param`). Los filtros dinámicos de reportes acumulan strings de condición y pasan valores como dict — nunca f-strings con input de usuario. Verificado en `reports_router.py`.
+
+#### ✅ XSS — PASS
+Templates Jinja2 escapan por defecto. No se usa `|safe` con datos de usuario. Chart.js recibe datos via JSON del endpoint `/data` (no innerHTML).
+
+#### ⚠️ CSRF — REVISAR (deuda heredada)
+Los formularios POST del panel admin (login, catalog/services, catalog/plans, etc.) usan cookies `SameSite=Strict` como única mitigación CSRF. No existe token CSRF explícito.
+Mitigación aceptada: `SameSite=Strict` en HttpOnly cookie protege contra CSRF en todos los browsers modernos. Deuda técnica documentada: añadir CSRF token explícito en v1.0.
+
+#### ✅ Secrets hardcodeados — PASS
+Ningún secreto en código. `.env` en `.gitignore`. `_VALID_PROMOS` en LiaForge (repositorio separado) es un dict de metadatos públicos (nombre→porcentaje), no un secreto.
+**Nota:** en el repo de LiaForge (scraping-universidades), el `.env` con `SCRAPING_ADMIN_KEY` estuvo en historial git en versiones anteriores. Rotación recomendada.
+
+#### ✅ Sesiones — PASS (con observación de TTL)
+JWT HttpOnly + SameSite=Strict + Secure. Access token 15 min, refresh 30 días con rotación. Cookies: `caf_access` y `caf_refresh`.
+⚠️ OBSERVACIÓN: en sesión 2026-06-17 se detectó que el TTL del access token se extendió a 12 h temporalmente para pruebas (`JWT_ACCESS_TTL_MIN=720` en `.env` del VPS). Verificar que producción usa 15 min (`config.py` default = 15). Si el TTL largo persiste, priorizar implementar denylist de `jti` en logout (TASK-22).
+
+#### ✅ Endpoints sin auth — PASS
+Públicos documentados: `GET /health`, `GET /health/db`, `GET /login`, `POST /login`, `GET /docs` (solo dev).
+Todos los endpoints `/admin/*`, `/portal/*`, `/api/v2/*`, `/webhooks/*` requieren auth.
+Webhooks: `/webhooks/hub-payment-paid` valida HMAC; `/webhooks/stripe` (Hub) valida `Stripe-Signature` t.v1 HMAC.
+
+#### ✅ Multi-tenancy — PASS post-fix (hallazgo crítico corregido en esta sesión)
+
+**Vulnerabilidad encontrada y corregida (commit `d5853b3`):**
+
+El filtro `l.organization_id = :_org` estaba preparado en el código de `GET /admin/reports/consumption/data` (`reports_router.py`) pero **nunca se añadía al WHERE**. Un operador con acceso al panel de cualquier organización podía ver el consumo de TODOS los tenants de la plataforma.
+
+**Evidencia antes del fix:**
+```
+GET /admin/reports/consumption/data?date_from=2026-01-01&date_to=2026-12-31
+# org5 → devolvía total_cents=31 380 (consumo de TODOS los orgs)
+```
+
+**Fix aplicado:** se añadió `_org_filter` al `WHERE` del query en `reports_router.py`, con el valor de `organization_id` extraído del JWT del usuario autenticado (`current_user.organization_id`). La excepción `is_platform` (org 1) conserva acceso a todos los orgs via parámetro `?org`.
+
+**Evidencia después del fix:**
+```
+GET /admin/reports/consumption/data?date_from=2026-01-01&date_to=2026-12-31
+# org5 → total_cents=0 (solo ve su propio consumo, correcto)
+```
+
+**Metodología de auditoría:** formalizada en ADR-030.
+
+### Confirmaciones positivas
+- El fix sigue el mismo patrón de `_org_scope`/`_org_filter`/`_detail_where` ya establecido en el código multi-tenant del CAF (auditoría 2026-06-16): valores de org van parametrizados (`:_org`), nunca interpolados en el string SQL.
+- El endpoint está cubierto por `require_roles(_OPS)` (super_admin/finanzas/lectura), por lo que el vector requería credenciales válidas de operador — no era acceso anónimo.
+- La corrección no cambia el comportamiento para `is_platform=True` (org 1 sigue viendo todo vía `?org`).
+
+### Acciones requeridas antes del siguiente push
+Ninguna (sin ❌). El hallazgo crítico de multi-tenancy fue corregido y verificado en esta sesión.
+
+### Deuda técnica documentada (no bloqueante) — actualización acumulada
+1. `revoked_tokens` / denylist (TASK-22) — **prioridad sube** si `JWT_ACCESS_TTL_MIN=720` persiste en prod.
+2. Token CSRF explícito en formularios mutativos `/admin/*` — heredada.
+3. Atar el Bearer de app a `client_id`/`plan_code` permitidos si crece el nº de apps (ADR-017).
+4. Atribuir el actor real (api_key/org) en el onboard app-facing (H-C de 2026-06-16).
+5. Confirmar `metadata.purpose` del webhook del Hub (H-D de 2026-06-16).
+6. Verificar en VPS que `JWT_ACCESS_TTL_MIN` real = 15 (no 720).
+7. Rotar `SCRAPING_ADMIN_KEY` (estuvo en historial git de LiaForge).
+
+*Addendum OWASP — auditoría 2026-06-18 (multi-tenancy enforcement reportes). Commit d5853b3.*
+
+---
+
+## Addendum 2026-06-19 — Módulo de referidos de distribuidores
+
+**Commit auditado:** `6fa7043` (CAF, rama `main`)
+**Resultado:** **PASS** — sin observaciones nuevas, sin bloqueo de commit.
+
+### Resumen
+
+| Categoría | Estado | Hallazgos |
+|---|---|---|
+| SQL Injection | ✅ PASS | Queries de `distributor_commissions` y lookup de `distributors` usan `text()` con bind params nominales |
+| XSS | ✅ PASS | Templates `distributors.html` / `distributor_detail.html` con Jinja2 autoescape; sin `\|safe` |
+| CSRF | ⚠️ REVISAR | Deuda heredada — formularios POST protegidos solo por `SameSite=Strict` |
+| Secrets hardcodeados | ✅ PASS | Sin secretos en código; códigos de referido son datos públicos (los comparte el distribuidor) |
+| Sesiones | ✅ PASS | Sin cambios en la capa de auth |
+| Endpoints sin auth | ✅ PASS | Todos los endpoints `/admin/distributors/*` requieren `_OPS` (lectura) o `_WRITE` (mutación) |
+| Control de acceso | ✅ PASS | `organization_id` del distribuidor poblado desde la sesión, nunca desde el body |
+| Dinero / append-only | ✅ PASS | `distributor_commissions` es append-only; `UPDATE` de `status` solo aplica cuando `status = 'pending'` |
+
+### Detalle
+
+#### ✅ SQL Injection — PASS
+El lookup de distribuidor en `api_app_onboard` usa `text()` con parámetros `:c` y `:org`. El `INSERT INTO distributor_commissions` y el `COUNT(payments)` en `_maybe_accrue_commission` usan parámetros nominales en todos los campos. El `UPDATE` de `mark_commission_paid` limita el scope con `WHERE id = :cid AND distributor_id = :did AND status = 'pending'` — todos parametrizados.
+
+#### ✅ XSS — PASS
+Jinja2 autoescape. No se usa `|safe` en los nuevos templates. Los valores monetarios se formatean con `'%.2f'|format(x/100)` (expresión de filtro, no innerHTML).
+
+#### ✅ Control de acceso / tenant isolation — PASS
+El `organization_id` del nuevo distribuidor se toma de `user.organization_id` (JWT), nunca del form body. El lookup de distribuidores aplica `organization_id IN (:org, 1)` (org del tenant o plataforma), coherente con ADR-029. `mark_commission_paid` exige que la comisión pertenezca al `distributor_id` indicado en la URL.
+
+#### ✅ Append-only y consistencia financiera — PASS
+`distributor_commissions` no tiene `DELETE` ni `UPDATE` general. El único `UPDATE` permitido cambia `status = 'paid'` con condición `status = 'pending'` — una comisión pagada no puede revertirse desde la UI. `commission_cents` y `base_cents` son immutables post-insert (no expuestos en el UPDATE). Idempotencia garantizada por `UNIQUE INDEX uq_distributor_commissions_txn ON (distributor_id, payment_hub_txn)`.
+
+#### ✅ Best-effort seguro — PASS
+El accrual de comisión en `prepago.py` está envuelto en `try/except Exception`. Si falla, el pago del cliente ya está confirmado y persistido (paso anterior en el mismo flujo); el error se loguea como `WARNING` sin propagarse al caller ni exponer información al cliente.
+
+### Acciones requeridas antes del siguiente push
+Ninguna (sin ❌).
+
+### Deuda técnica acumulada (no bloqueante)
+1. Token CSRF explícito en formularios mutativos `/admin/*` — heredada (ver addendums anteriores).
+2. `revoked_tokens` / denylist JWT — heredada.
+3. Verificar `JWT_ACCESS_TTL_MIN = 15` en `.env` VPS de producción.
+4. Rotar `SCRAPING_ADMIN_KEY` (estuvo en historial git de LiaForge).
+5. Confirmar pago manual real de comisiones con Norma Silva tras primera recarga de cliente NYM.
+
+*Addendum OWASP — auditoría 2026-06-19 (módulo referidos distribuidores). Commit 6fa7043.*

@@ -314,7 +314,7 @@ pospuesta hasta demanda real.
 
 ## 12. ESTADO ACTUAL Y PENDIENTES (actualizar al cerrar cada sesion)
 
-**Sesion al: 2026-06-18. Foco: gráfica pastel + formularios catálogo + fix seguridad multi-tenant + promo NYM.**
+**Sesion al: 2026-06-19. Foco: módulo de referidos de distribuidores (mig 038 + accrual + panel admin) + docs formales.**
 
 > **ACTUALIZACION 2026-06-08 (sesion LiaForge) — leer esto primero:**
 > - **P2 (consumo E2E) HECHO y EN PROD:** IA Perplexity via proxy nuevo del Medidor (/llm/perplexity, mide+debita wallet client-5; PROXY_DEFAULT_WALLETS factura al cliente) + email via endpoint nuevo Centro POST /v1/messages/record (Scraping send_email lo reporta) -> sync CAF->Finanzas (source=medidor/messages) por cron */5. Verificado: $500 -> $497.69. Key DeepSeek corregida.
@@ -387,6 +387,15 @@ CAF clients.id <-> external_user_id "client-{id}" en cada core.
 - **Tarea pendiente #1:** webhook Stripe LIVE antes de salir a producción.
 - **Tarea pendiente #2:** "Error al cargar datos" en reportes — investigar 500 residual.
 
+### ✅ Sesion 2026-06-19 — Módulo de referidos de distribuidores (commit 6fa7043)
+- **Migración 038:** `referral_code` + `commission_pct` en `distributors`; `referral_distributor_id FK` en `clients`; tabla append-only `distributor_commissions` (idempotente por `UNIQUE(distributor_id, payment_hub_txn)`).
+- **`api_router.py`:** `AppOnboardBody.referral_code` opcional; lógica que vincula el cliente al distribuidor tras el onboard.
+- **`prepago.py`:** `_maybe_accrue_commission` — best-effort, solo en primera recarga (`COUNT(payments)==1`), `ON CONFLICT DO NOTHING`.
+- **Panel admin distribuidores:** `GET/POST /admin/distributors`, `GET /admin/distributors/{id}`, `POST .../commissions/{cid}/pay`. Templates `distributors.html` + `distributor_detail.html`. Menú "Referidos" en `_layout.html`.
+- **Norma Silva (id=3):** `NYM`, `25%` configurada en BD.
+- **Docs:** ADR-031 + CHANGELOG v0.10.0 + OWASP addendum 2026-06-19. ADR-028/029/030 (generados en sesión anterior pero nunca llegaron al VPS) incluidos en este commit.
+- **Commit:** `6fa7043` (VPS == GitHub).
+
 ### ✅ Sesion 2026-06-18 — Gráfica por core + formularios catálogo + fix seguridad + promo NYM (commits af45cfe, 6faaeb5, 82d758d, 35e63b7, d5853b3)
 - **Gráfica pastel por core:** Chart.js pie añadida a `/admin/reports/consumption` con colores por core. `by_core` en response JSON.
 - **Formularios alta servicios/planes:** `POST /admin/catalog/services` y `POST /admin/catalog/plans` con org isolation, validación enum, PRG flash.
@@ -395,10 +404,10 @@ CAF clients.id <-> external_user_id "client-{id}" en cada core.
 - **Backfill NYM:** bonos retroactivos aplicados a clientes 20 y 21 (+62 500 cr c/u, saldo final 312 500 cr).
 - **ADR-028/029/030** añadidos. OWASP addendum 2026-06-18.
 
-### Estado de repos (2026-06-18)
-- **CAF:** VPS == GitHub (d5853b3). Deploy = `git pull` + `docker compose up -d --build`.
+### Estado de repos (2026-06-19)
+- **CAF:** VPS == GitHub (6fa7043). Deploy = `git pull` + `docker compose up -d --build`.
 - **Hub:** VPS == GitHub (5d53a50/1619dae). Deploy = `docker compose up -d --build hub`.
-- **Scraping/LiaForge:** deploy = scp. No git pull en VPS. (auth.py sin cambio tras revert).
+- **Scraping/LiaForge:** deploy = scp. No git pull en VPS. (auth.py sin cambio — referral_code pendiente de aplicar por equipo LiaForge).
 - **Centro/Medidor/Finanzas:** sin cambios de código.
 
 ### Pendientes (orden)
@@ -410,7 +419,7 @@ CAF clients.id <-> external_user_id "client-{id}" en cada core.
 | P5 | Deploy key `scraping-inovaweb` en VPS | usuario (GitHub) |
 | T1 | Webhook Stripe LIVE antes de producción | pendiente |
 | T2 | Fix "Error al cargar datos" reportes (resuelto: alias + GROUP BY; cerrar) | ✅ RESUELTO |
-| LF | Fix `promo_code` en `auth.py` de LiaForge (instrucción pendiente de aplicar) | equipo LiaForge |
+| LF | Agregar campo `referral_code` en form registro LiaForge + enviar al CAF (instrucciones dadas) | equipo LiaForge |
 | 1 | DNS/TLS admin/app.inovaweb.com.mx | usuario |
 | F | CFDI 4.0 via Ecofile | diferido |
 

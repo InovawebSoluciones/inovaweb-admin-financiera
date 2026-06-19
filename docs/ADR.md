@@ -1145,3 +1145,112 @@ Añadir al panel admin la página `GET /admin/reports/consumption` (Jinja2 + Cha
 - Los reportes reflejan el libro `prepaid_ledger` (fuente de verdad del CAF), coherente con los saldos y el cierre mensual.
 - El filtro de app requiere `app_slug` poblado en `services` (dependencia de ADR-026).
 - El límite de 500 filas por consulta es suficiente para el MVP; paginación o exportación CSV pendiente.
+
+---
+
+## ADR-028: Alta self-service de servicios y planes por tenant
+**Fecha:** 2026-06-18
+**Estado:** Aprobado
+
+### Contexto
+Los tenants que usan el CAF como motor SaaS multi-tenant no tenían UI para crear sus propios servicios y planes. El flujo previo requería acceso SQL directo al servidor, lo que bloqueaba la autonomía operativa de cada organización.
+
+### Decisión
+Agregar `POST /admin/catalog/services` y `POST /admin/catalog/plans` con formularios Jinja2 inline en la misma página del catálogo existente. El `organization_id` se fija desde la sesión del usuario autenticado y nunca proviene del body del request. Validaciones aplicadas al insertar:
+
+- `source_core` validado contra enum fijo `{medidor, hub, messages, finanzas, internal}`.
+- `unit_price_mxn` convertido a centavos enteros al persistir.
+- Flash message vía redirect GET (patrón PRG): `?saved=ok | error_dup | error_core | error_precio`.
+
+### Alternativas consideradas
+- **API JSON separada**: dos endpoints REST independientes en lugar de form + página integrada. Descartada porque duplica superficie sin beneficio para el caso de uso MVP.
+- **Modal HTMX**: componente dinámico sin recarga de página. Descartado por complejidad innecesaria en esta fase; el PRG cubre todos los casos de error/éxito con código mínimo.
+
+### Consecuencias
+- Cada organización puede gestionar su propio catálogo de servicios y planes sin intervención de DBA.
+- El `organization_id` nunca viaja desde el cliente, eliminando el vector de escape de tenant por body tampering.
+- El enum `source_core` debe mantenerse sincronizado con los sistemas reales de la plataforma.
+
+---
+
+## ADR-029: Promociones de plataforma aplicables a todos los tenants
+**Fecha:** 2026-06-18
+**Estado:** Aprobado
+
+### Contexto
+Las promociones de tipo `referral` creadas por Inovaweb (org 1) no podían ser usadas por tenants hijos porque el query de validación filtraba `WHERE organization_id = :org`. Un tenant con su propia org key nunca encontraba la promo de plataforma, haciendo inoperante el programa de referidos.
+
+### Decisión
+Cambiar el filtro de validación de promociones en `api_router.py` a:
+
+```sql
+WHERE organization_id IN (:org, 1)
+ORDER BY organization_id DESC
+LIMIT 1
+```
+
+El `ORDER BY organization_id DESC` garantiza que, si existe un código con el mismo nombre tanto en org 1 como en la org del tenant, se usa la versión tenant-específica.
+
+### Alternativas consideradas
+- **Copiar la promo a cada org al crearla**: proliferación de filas, riesgo de inconsistencia. Descartada.
+- **Flag `is_global` en la tabla `promotions`**: sobreingeniería para el caso de uso actual. Descartada.
+
+### Consecuencias
+- Inovaweb puede crear códigos referral/distribuidor en org 1 que aplican automáticamente a toda la plataforma.
+- Si un tenant crea un código con el mismo nombre, su versión tiene precedencia (comportamiento explícito por el `DESC`).
+
+---
+
+## ADR-030: Metodología de auditoría de independencia de tenants
+**Fecha:** 2026-06-18
+**Estado:** Aprobado
+
+### Contexto
+Al agregar soporte multi-tenant completo al CAF, era necesario verificar de forma sistemática que ningún tenant pudiera leer ni modificar datos de otro, tanto a nivel de SQL como a través de HTTP real con credenciales válidas de una org distinta.
+
+### Decisión
+Protocolo de auditoría en dos capas obligatorias:
+
+1. **SQL ground-truth**: `SELECT count(*) FROM <tabla> WHERE organization_id = :nueva_org` sobre las 15 tablas con `organization_id` para confirmar aislamiento en base de datos.
+2. **HTTP con JWT real**: autenticar con credenciales de la nueva org y ejercer todos los endpoints del panel y la API; comparar respuestas con las de org 1 para verificar que no hay fuga cruzada.
+
+Hallazgo crítico detectado por este protocolo: `/admin/reports/consumption/data` calculaba el filtro `oc` de `_org_scope()` pero nunca lo añadía al string de conditions (`append()` omitido). El bug era silencioso. Corregido en commit `6faaeb5`.
+
+### Alternativas consideradas
+- **Solo tests automatizados**: insuficiente para lógica de filtros dinámica por concatenación de strings; el bug de `append()` silencioso habría pasado asserts de cobertura de ramas.
+- **Solo revisión de código estática**: el bug requería trazar la variable `oc` a través de varias líneas de construcción de query; la ejecución HTTP real lo expuso en segundos.
+
+### Consecuencias
+- El protocolo de dos capas debe ejecutarse ante cada nueva tabla o endpoint que maneje datos con `organization_id`.
+- Se mantiene `org5` (acmecorp) como tenant de prueba permanente para estos checks; no debe usarse para datos de producción.
+- Los bugs de filtros dinámicos por concatenación de strings son la clase de error más probable en este patrón; considerar migrar a query builders en endpoints de reporte.
+
+---
+
+## ADR-031: Módulo de comisiones de referidos de distribuidores
+
+**Fecha:** 2026-06-19
+**Estado:** Aprobado
+
+### Contexto
+Inovaweb opera con distribuidores que reclutan clientes para los productos SaaS (LiaForge, Swigg, etc.). Cuando un distribuidor comparte su código y el cliente lo usa al registrarse, el distribuidor debe recibir una comisión económica en dinero real (no créditos). Se necesitaba un módulo que rastreara el vínculo distribuidor→cliente y acumulara la comisión en la primera recarga confirmada del cliente, dejando registro para pago manual posterior.
+
+### Decisión
+- **Nuevo campo `referral_code` en `distributors`** (UNIQUE case-insensitive) + `commission_pct NUMERIC(5,2)`.
+- **Nuevo campo `referral_distributor_id` en `clients`** (FK a `distributors`): se puebla en el onboard si el campo `referral_code` viene en `POST /api/v2/apps/onboard`.
+- **Tabla `distributor_commissions`** append-only: una fila por (distribuidor, pago); nunca se modifica, solo se añade `status='paid'` via `UPDATE` restringido al rol `_WRITE`.
+- **Accrual en primera recarga únicamente**: `_maybe_accrue_commission` en `prepago.py` verifica `COUNT(payments WHERE client_id) == 1` antes de insertar la comisión.
+- **Best-effort**: el accrual está envuelto en `try/except`; si falla, el pago al cliente ya está confirmado y se registra un `log.warning` para revisión manual.
+- **Idempotencia**: `UNIQUE INDEX uq_distributor_commissions_txn ON (distributor_id, payment_hub_txn)` con `ON CONFLICT DO NOTHING`.
+- **Pago manual**: Conrado realiza la transferencia bancaria y marca la comisión como pagada desde `/admin/distributors/{id}` con nota de referencia de la transferencia.
+
+### Alternativas consideradas
+- **Comisión en créditos al distribuidor (no dinero)**: no aplica, los distribuidores son personas externas sin cuenta en el sistema.
+- **Comisión en todas las recargas, no solo la primera**: aumenta la complejidad sin acuerdo comercial con todos los distribuidores; la primera recarga como trigger es el acuerdo inicial.
+- **Pago automático vía Hub al distribuidor**: requiere que los distribuidores tengan cuenta bancaria registrada en el sistema (CLABE/SPEI); fuera de alcance en MVP.
+
+### Consecuencias
+- El flujo de pago principal (Hub → CAF → créditos al cliente) no se ve afectado si el accrual de comisión falla.
+- El estado `pending` es la única fuente de verdad de lo que se debe pagar; no hay conciliación automática.
+- Si un cliente se registra sin código de referido, `referral_distributor_id` queda NULL y no se genera comisión — correcto.
+- No hay beneficio para el cliente: el código es del distribuidor, no un cupón de descuento (ver ADR-025/029 para el flujo de promos con bono al cliente).
