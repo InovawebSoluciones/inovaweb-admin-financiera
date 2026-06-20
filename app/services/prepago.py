@@ -373,60 +373,7 @@ async def _process_wallet_credit(
                  extra={"hub_transaction_id": hub_txn_id})
         return PaidResult(status="duplicate_ignored", recharge_id=recharge_id)
 
-    # 1) acreditar saldo en el Medidor (idempotente por request_id determinista).
-    #    H2: el credito puede fallar por red -> reintentos con backoff exponencial
-    #    (3 intentos, 1s/2s/4s). El request_id determinista hace que un reintento
-    #    NO produzca doble acreditacion (idempotencia del Medidor). Si se agotan
-    #    los reintentos, se marca la operacion como pending_retry (audit
-    #    hub.paid.pending_retry) y se deja recuperable (502 -> el Hub/worker la
-    #    re-procesa; el INSERT del pago ya reclamo la fila, no se duplica).
-    medidor = MedidorClient()
-    try:
-        await _retry_async(
-            lambda: medidor.credit(
-                wallet_id,
-                amount_cents=amount_cents,
-                request_id=req_id,
-                reason=reason,
-                metadata={
-                    "caf_client_id": client_id,
-                    "hub_transaction_id": hub_txn_id,
-                    "plan_code": ev.get("plan_code"),
-                },
-            ),
-            op_name="medidor_credit",
-        )
-    except Exception as e:
-        await _persist_failure_audit(
-            actor_ip=actor_ip, request_id=request_id,
-            action="hub.paid.pending_retry",
-            new_values={"error": str(e), "stage": "medidor_credit",
-                        "status": "pending_retry",
-                        "attempts": _CREDIT_MAX_ATTEMPTS,
-                        "hub_transaction_id": hub_txn_id, "request_id": req_id,
-                        "caf_client_id": client_id, "amount_cents": amount_cents},
-        )
-        log.error(
-            "medidor_credit_pending_retry",
-            extra={"hub_transaction_id": hub_txn_id, "caf_client_id": client_id,
-                   "request_id": req_id, "amount_cents": amount_cents},
-        )
-        raise PrepagoError(f"falla acreditando saldo en el medidor: {e}") from e
-    finally:
-        await medidor.close()
-
-    # 1b) acreditar saldo en el CAF (prepaid_ledger) — fuente de verdad del saldo (modelo B).
-    #     El Medidor solo mide; el saldo vive aqui. Idempotente por req_id determinista.
-    await db.execute(
-        text(
-            "INSERT INTO prepaid_ledger (client_id, kind, amount_cents, source, idempotency_key, meta) "
-            "VALUES (:c, 'credit', :a, 'recarga_hub', :k, CAST(:m AS jsonb)) "
-            "ON CONFLICT (client_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING"
-        ),
-        {"c": client_id, "a": amount_cents, "k": req_id,
-         "m": _json.dumps({"hub_transaction_id": hub_txn_id, "purpose": ev["purpose"]})},
-    )
-
+    # medidor.credit() eliminado — el balance vive en prepaid_ledger del CAF
     # 2) asiento en Finanzas-Core (idempotente por source_ref determinista)
     finanzas = FinanzasClient()
     try:

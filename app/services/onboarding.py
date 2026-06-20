@@ -153,40 +153,23 @@ async def onboard_client(
     # external_user_id canonico del cliente en todos los cores compartidos
     external_user_id = f"client-{client_id}"
 
-    # 2) crear wallet prepago en el Medidor (unico recurso provisionado por cliente)
-    medidor = MedidorClient()
-    wallet_id: str | None = None
-    try:
-        wallet = await medidor.create_wallet(
-            external_user_id=external_user_id,
-            metadata={"caf_client_id": client_id, "razon_social": payload.legal_name},
-        )
-        wallet_id = wallet["id"]
-    except Exception as e:
-        # nada externo que compensar todavia (la wallet no se creo); rollback local
-        await medidor.close()
-        await db.rollback()
-        await _persist_failure_audit(
-            actor_user_id=actor_user_id, actor_ip=actor_ip,
-            client_id=client_id, request_id=request_id,
-            new_values={"error": str(e), "stage": "create_wallet"},
-        )
-        raise OnboardingError(f"falla creando wallet en medidor: {e}") from e
+    # 2) registrar external_user_id en medidor_account_id (ya no se crea wallet en el Medidor;
+    #    el balance vive en prepaid_ledger del CAF)
+    wallet_id: str | None = None  # conservado para compatibilidad con _compensate
+    medidor = MedidorClient()     # se usa más abajo para get_usage
 
-    # a partir de aqui, cualquier fallo compensa la wallet ya creada
     try:
         # 3) actualizar referencias externas en clients
-        #    (medidor_account_id = wallet id; el resto = external_user_id de
-        #     referencia en cada core compartido, mismo string en todos)
+        #    medidor_account_id = external_user_id (identificador de proyecto en Medidor)
         await db.execute(text("""
             UPDATE clients SET
-              medidor_account_id  = :wallet,
+              medidor_account_id  = :ext,
               hub_account_id      = :ext,
               finanzas_account_id = :ext,
               messages_account_id = :ext,
               updated_at = now()
             WHERE id = :id
-        """), {"wallet": wallet_id, "ext": external_user_id, "id": client_id})
+        """), {"ext": external_user_id, "id": client_id})
 
         # 2b) ligar la wallet del Medidor + el cliente CAF con la Company de
         #     Scraping (solo si el cliente tiene app Scraping asociada). Si el
@@ -393,8 +376,7 @@ async def _compensate(
         "onboarding_compensate",
         extra={"client_id": client_id, "wallet_id": wallet_id, "error": error},
     )
-    if wallet_id:
-        await _safe(medidor.suspend_wallet(wallet_id), "medidor")
+    # wallet eliminada del Medidor — no hay nada que suspender
     await medidor.close()
 
 

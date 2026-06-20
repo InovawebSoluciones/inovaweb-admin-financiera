@@ -89,26 +89,25 @@ async def api_client_balance(
 ) -> dict:
     """Saldo consolidado del cliente.
 
-    En el modelo PREPAGO la fuente de verdad del saldo es la WALLET del Medidor
-    (provisionada en el alta). Se lee con medidor.get_balance(medidor_account_id);
-    el CAF nunca duplica el saldo. Si el cliente aun no tiene wallet, se reporta 0.
+    Fuente de verdad: prepaid_ledger del CAF (SUM credits - SUM debits).
+    El wallet del Medidor fue eliminado; el balance vive aqui.
     """
     c = (await db.execute(
-        text("SELECT medidor_account_id, status FROM clients WHERE id=:id"),
+        text("SELECT status FROM clients WHERE id=:id"),
         {"id": cid},
     )).mappings().first()
     if not c:
         raise HTTPException(404, "cliente no existe")
-    if not c["medidor_account_id"]:
-        return {"client_id": cid, "status": c["status"],
-                "balance_cents": 0, "note": "sin wallet provisionada en medidor"}
-    medidor = MedidorClient()
-    try:
-        bal = await medidor.get_balance(c["medidor_account_id"])
-    finally:
-        await medidor.close()
-    return {"client_id": cid, "status": c["status"],
-            "wallet_id": c["medidor_account_id"], **bal}
+    row = (await db.execute(
+        text("""
+            SELECT COALESCE(SUM(CASE WHEN kind='credit' THEN amount_cents
+                                     ELSE -amount_cents END), 0) AS balance_cents
+            FROM prepaid_ledger WHERE client_id=:id
+        """),
+        {"id": cid},
+    )).first()
+    balance_cents = int(row[0]) if row else 0
+    return {"client_id": cid, "status": c["status"], "balance_cents": balance_cents, "currency": "MXN"}
 
 
 # ---------------------------------------------------------------------

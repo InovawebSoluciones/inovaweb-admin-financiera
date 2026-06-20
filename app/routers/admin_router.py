@@ -215,17 +215,17 @@ async def client_detail(
         WHERE s.client_id = :id ORDER BY s.started_at DESC
     """), {"id": cid})).mappings().all()
     # Saldo real (Medidor) + consumos reales (Finanzas: IA + mensajería).
-    saldo_cents = None
+    # saldo desde prepaid_ledger del CAF (wallet del Medidor eliminada)
+    saldo_row = (await db.execute(
+        text("""
+            SELECT COALESCE(SUM(CASE WHEN kind='credit' THEN amount_cents
+                                     ELSE -amount_cents END), 0)
+            FROM prepaid_ledger WHERE client_id=:id
+        """),
+        {"id": cid},
+    )).first()
+    saldo_cents = int(saldo_row[0]) if saldo_row else 0
     consumos: list[dict] = []
-    if c.get("medidor_account_id"):
-        med = MedidorClient()
-        try:
-            bal = await med.get_balance(str(c["medidor_account_id"]))
-            saldo_cents = bal.get("balance_cents")
-        except Exception:  # noqa: BLE001
-            saldo_cents = None
-        finally:
-            await med.close()
     fin = FinanzasClient()
     try:
         resp = await fin.list_entries(direction="debit", limit=200)
