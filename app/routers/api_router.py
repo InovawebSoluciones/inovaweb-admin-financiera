@@ -467,7 +467,7 @@ class AppOnboardBody(BaseModel):
 
 class AppOnboardResponse(BaseModel):
     client_id: int
-    wallet_id: str
+    wallet_id: str | None = None   # wallet del Medidor eliminado (ledger nativo) — fix 2026-06-23
     plan_code: str
     granted_cents: int                # crédito total acreditado (grant + bono promo)
     promo_applied: bool = False

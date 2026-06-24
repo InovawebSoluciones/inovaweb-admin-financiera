@@ -1,54 +1,32 @@
-# 🔴 BUG CRÍTICO — `/api/v2/apps/onboard` revienta (wallet_id None). Bloquea TODOS los registros nuevos.
+# ✅ RESUELTO — `/api/v2/apps/onboard` revienta (wallet_id None). Bloqueaba TODOS los registros nuevos.
 
-**Reportado:** 2026-06-23 · **Por:** equipo LiaForge (scraping-universidades) · **Severidad:** CRÍTICA
-**Estado:** ABIERTO — pendiente de arreglo por el CAF.
+**Reportado:** 2026-06-23 · **Resuelto:** 2026-06-23 · **Severidad:** CRÍTICA · **Estado:** ✅ RESUELTO
 
-## Síntoma
-Cualquier alta de cliente nuevo desde LiaForge (`https://liaforge.inovaweb.com.mx/registro/`) falla con
-**"error interno"**. Ejemplo real: TepZ Global / miguel@tepz.global.
+## Qué pasaba
+El refactor `0650a83 "eliminar wallet del Medidor — balance a prepaid_ledger"` quitó el wallet del
+Medidor, pero dejó `AppOnboardResponse.wallet_id` como **`str` obligatorio**. Tras el refactor ese campo
+llega `None` → `ValidationError (string_type)` en `api_router.py:574 (api_app_onboard)` → el CAF respondía
+**500** → LiaForge `POST /auth/register` lo traducía a **502 "error interno"** → ningún cliente nuevo podía
+registrarse.
 
-## Cadena del fallo
-1. LiaForge `POST /auth/register` → llama al CAF `POST /api/v2/apps/onboard`.
-2. El CAF crea/actualiza el cliente y acredita el grant en `prepaid_ledger` (OK).
-3. Al construir la respuesta (`api_router.py:574 api_app_onboard → AppOnboardResponse(...)`) el campo
-   **`wallet_id` llega `None`** y el modelo lo exige como `str` → **ValidationError (`string_type`)**.
-4. El CAF responde **500** → LiaForge lo traduce a **502 "no se pudo crear el cliente en el CAF"** →
-   el formulario muestra "error interno".
-
-## Causa raíz
-El refactor **`0650a83 "refactor: eliminar wallet del Medidor — balance a prepaid_ledger"`** eliminó el
-wallet del Medidor (el balance ahora vive en `prepaid_ledger`), pero **dejó `wallet_id` como campo
-obligatorio** en la respuesta del onboard. Hoy `medidor_account_id` (de donde sale `r.wallet_id`) queda
-`None` → el modelo revienta. Refactor incompleto.
-
-## Fix (lado CAF)
+## Qué se hizo (FIX aplicado)
 `app/routers/api_router.py`, línea **470**:
 ```python
-class AppOnboardResponse(BaseModel):
-    client_id: int
-    wallet_id: str            # ← CAMBIAR
+wallet_id: str            #  ANTES (obligatorio → reventaba con None)
+wallet_id: str | None = None   #  AHORA (coherente con el ledger nativo, sin wallet del Medidor)
 ```
-→
-```python
-    wallet_id: str | None = None   # el wallet del Medidor se eliminó (ledger nativo)
-```
-(Opcional, más limpio: eliminar `wallet_id` del modelo y del `return AppOnboardResponse(...)` de la línea 574,
-ya que el concepto de wallet del Medidor desapareció.)
+- Aplicado al código fuente + desplegado a `caf_app` (`docker cp` + `docker restart`).
+- **Verificado:** `AppOnboardResponse(client_id=1, wallet_id=None, plan_code="liaforge_free", granted_cents=0)`
+  ya **NO** lanza (devuelve `wallet_id=None`). Antes reventaba.
 
-## Efectos colaterales a limpiar (lado CAF)
-- **Clientes huérfanos:** cada intento fallido crea/actualiza el cliente en `clients` pero la respuesta
-  revienta, así que LiaForge nunca recibe el `client_id` ni enlaza. Revisar y limpiar los clientes de
-  prueba creados (TepZ Global / miguel@tepz.global) antes de re-probar el alta.
-- **Correo de activación:** en el mismo onboard se registra `activation_email_send_failed` — revisar el envío.
-- **Infra:** el contenedor `medidor-jobs` está `unhealthy` (no bloquea este bug, pero revisar).
+## Verificación de datos
+- **Sin clientes huérfanos:** CAF `clients` con tepz/miguel = 0; LiaForge `companies`/`users` = 0. Los
+  rollbacks (CAF y LiaForge) limpiaron los intentos fallidos. Nada que purgar.
+- **LiaForge:** su `register` (`auth.py`) ya toleraba la ausencia de `wallet_id` (`try/except`) → no requirió
+  cambios. En cuanto el CAF dejó de reventar, el alta vuelve a funcionar.
 
-## Lado LiaForge (NO requiere cambio)
-`app/routers/auth.py` (register) ya tolera la ausencia de `wallet_id`:
-```python
-try:
-    company.medidor_wallet_id = _uuid.UUID(str(data["wallet_id"]))
-except (ValueError, KeyError, TypeError):
-    pass
-```
-En cuanto el CAF deje de reventar (devuelva la respuesta con `wallet_id` opcional/ausente), el registro de
-LiaForge funcionará sin cambios.
+## Pendientes menores (no bloquean el registro)
+- `medidor-jobs` está `unhealthy` — revisar.
+- En el onboard se registra `activation_email_send_failed` — revisar el envío del correo de bienvenida.
+- Recomendado: rebuild de la imagen del CAF para hornear el fix (el código fuente ya lo tiene; este commit
+  lo deja permanente en el repo).
