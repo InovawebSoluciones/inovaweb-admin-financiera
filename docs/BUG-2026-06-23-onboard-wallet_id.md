@@ -28,5 +28,5 @@ wallet_id: str | None = None   #  AHORA (coherente con el ledger nativo, sin wal
 ## Pendientes menores (no bloquean el registro)
 - `medidor-jobs` está `unhealthy` — revisar.
 - En el onboard se registra `activation_email_send_failed` — revisar el envío del correo de bienvenida.
-- Recomendado: rebuild de la imagen del CAF para hornear el fix (el código fuente ya lo tiene; este commit
+- ✅ Imagen del CAF reconstruida y `caf_app` recreado: el fix queda HORNEADO en la imagen (permanente, no se pierde al recrear el contenedor).
   lo deja permanente en el repo).
