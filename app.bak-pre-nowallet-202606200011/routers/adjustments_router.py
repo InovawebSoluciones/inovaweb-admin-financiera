@@ -67,11 +67,6 @@ async def _assert_client_in_org_admin(
 # ---------------------------------------------------------------------
 
 
-_METODOS_PAGO = {"efectivo", "transferencia", "tarjeta", "otro"}
-_SAT_KEY_CONSUMO = "81112200"   # mismo codigo SAT que usa billing.py para consumo/servicio
-_UNIT_SAT_KEY_SERVICIO = "E48"
-
-
 class AdjustBody(BaseModel):
     kind: str               # 'credit' | 'debit'
     amount_cents: int       # SIEMPRE > 0; el signo lo da kind
@@ -166,82 +161,6 @@ async def adjust_balance(
     return {"ok": True, "client_id": cid, "kind": body.kind,
             "amount_cents": body.amount_cents, "balance_cents": new_bal,
             "idempotent_replay": False}
-
-
-class RegisterPaymentBody(BaseModel):
-    amount_cents: int          # SIEMPRE > 0
-    payment_method: str        # 'efectivo' | 'transferencia' | 'tarjeta' | 'otro'
-    description: str | None = None
-    idempotency_key: str | None = None
-
-
-@router.post("/clients/{cid}/register-payment")
-async def register_manual_payment(
-    cid: int,
-    body: RegisterPaymentBody,
-    request: Request,
-    user: CurrentUser = Depends(_WRITE),
-    db: AsyncSession = Depends(get_db),
-    org: int | None = Query(None),
-):
-    """Registra un pago recibido FUERA de la pasarela (efectivo, transferencia,
-    etc.) como ingreso real de CAF: crea una factura (status='paid') con su
-    renglon, para que SI aparezca en /reports/income (a diferencia de un ajuste
-    de saldo en prepaid_ledger, que solo mueve el wallet y no es ingreso
-    contable). No toca el wallet del cliente -- son cosas distintas: esto es
-    el registro contable de que SE COBRO, no un credito de saldo de consumo.
-
-    Idempotencia por (client_id, idempotency_key): un reenvio del mismo pago
-    devuelve la factura ya creada sin duplicarla.
-    """
-    if body.payment_method not in _METODOS_PAGO:
-        raise HTTPException(422, f"payment_method debe ser uno de: {', '.join(sorted(_METODOS_PAGO))}")
-    if body.amount_cents <= 0:
-        raise HTTPException(422, "amount_cents debe ser > 0")
-
-    target_org = _resolve_org(user, org)
-    await _assert_client_in_org_admin(db, cid, target_org, user)
-
-    await db.execute(text("SELECT pg_advisory_xact_lock(:c)"), {"c": cid})
-
-    if body.idempotency_key:
-        prev = (await db.execute(
-            text("SELECT id, total_cents FROM invoices "
-                 "WHERE client_id=:c AND idempotency_key=:k"),
-            {"c": cid, "k": body.idempotency_key},
-        )).first()
-        if prev:
-            return {"ok": True, "invoice_id": prev[0], "total_cents": int(prev[1]),
-                    "idempotent_replay": True}
-
-    await bind_actor(db, actor_user_id=user.id,
-                     actor_ip=request.client.host if request.client else None,
-                     request_id=getattr(request.state, "request_id", None))
-
-    desc = body.description or f"Pago manual registrado ({body.payment_method})"
-    today = (await db.execute(text("SELECT current_date"))).scalar()
-    inv_id = (await db.execute(
-        text("INSERT INTO invoices "
-             "(client_id, organization_id, period_start, period_end, "
-             " subtotal_cents, discount_cents, tax_cents, total_cents, "
-             " status, paid_at, created_by_user_id, payment_method, idempotency_key) "
-             "VALUES (:c, :org, :d, :d, :amt, 0, 0, :amt, "
-             " 'paid', now(), :uid, :pm, :k) RETURNING id"),
-        {"c": cid, "org": target_org, "d": today, "amt": body.amount_cents,
-         "uid": user.id, "pm": body.payment_method, "k": body.idempotency_key},
-    )).scalar_one()
-    await db.execute(
-        text("INSERT INTO invoice_items "
-             "(invoice_id, description, quantity, unit_price_cents, amount_cents, "
-             " sat_key, unit_sat_key) "
-             "VALUES (:i, :desc, 1, :amt, :amt, :sk, :uk)"),
-        {"i": inv_id, "desc": desc, "amt": body.amount_cents,
-         "sk": _SAT_KEY_CONSUMO, "uk": _UNIT_SAT_KEY_SERVICIO},
-    )
-    await db.commit()
-
-    return {"ok": True, "invoice_id": inv_id, "total_cents": body.amount_cents,
-            "payment_method": body.payment_method, "idempotent_replay": False}
 
 
 @router.get("/clients/{cid}/adjustments")

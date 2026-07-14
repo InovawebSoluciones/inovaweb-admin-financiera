@@ -1,0 +1,39 @@
+{# Fragmento de la tabla de clientes. Se renderiza solo (HTMX) o incluido
+   desde clients_list.html. Recibe: clients (lista de dicts). #}
+<div class="bg-white shadow-sm rounded overflow-x-auto">
+  <table class="w-full text-sm">
+    <thead class="bg-slate-100 text-slate-600 text-xs uppercase">
+      <tr>
+        <th class="px-4 py-2 text-left">ID</th>
+        <th class="px-4 py-2 text-left">Razon social</th>
+        <th class="px-4 py-2 text-left">RFC</th>
+        <th class="px-4 py-2 text-left">Email</th>
+        <th class="px-4 py-2 text-left">Estado</th>
+        <th class="px-4 py-2 text-left">Alta</th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for c in clients %}
+      <tr class="border-t hover:bg-slate-50">
+        <td class="px-4 py-2">
+          <a href="/admin/clients/{{ c.id }}" class="text-[#4F46E5]">#{{ c.id }}</a>
+        </td>
+        <td class="px-4 py-2">{{ c.legal_name }}</td>
+        <td class="px-4 py-2 font-mono">{{ c.rfc }}</td>
+        <td class="px-4 py-2">{{ c.billing_email }}</td>
+        <td class="px-4 py-2">
+          <span class="text-xs px-2 py-0.5 rounded
+            {% if c.status=='active' %}bg-green-100 text-green-700
+            {% elif c.status=='suspended' %}bg-yellow-100 text-yellow-700
+            {% else %}bg-slate-200 text-slate-700{% endif %}">
+            {{ c.status }}
+          </span>
+        </td>
+        <td class="px-4 py-2 text-xs text-slate-500">{{ c.created_at.strftime('%Y-%m-%d') }}</td>
+      </tr>
+    {% else %}
+      <tr><td colspan="6" class="px-4 py-6 text-center text-slate-500">Sin clientes.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>

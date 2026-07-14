@@ -1,0 +1,80 @@
+{% extends "admin/_layout.html" %}
+{% block heading %}Promociones por distribuidor{% endblock %}
+{% block content %}
+
+{% set msg = {'dist_ok':'Distribuidor dado de alta.', 'promo_ok':'Código de promoción creado.'} %}
+{% if saved in msg %}
+<div class="mb-4 rounded bg-green-50 border border-green-200 text-green-700 text-sm px-4 py-2">{{ msg[saved] }}</div>
+{% elif saved and saved.startswith('error') %}
+<div class="mb-4 rounded bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2">No se pudo ({{ saved }}). Revisa los datos.</div>
+{% endif %}
+
+<div class="grid md:grid-cols-2 gap-6 mb-6">
+  <!-- alta de distribuidor -->
+  <div class="bg-white shadow-sm rounded p-4">
+    <div class="font-semibold text-slate-700 mb-1">Alta de distribuidor</div>
+    <p class="text-xs text-slate-400 mb-3">Por ahora solo el nombre. Después se ligará a su ID.</p>
+    <form method="post" action="/admin/catalog/distributors" class="flex gap-2 text-sm">
+      <input type="text" name="name" placeholder="Nombre del distribuidor" required
+             class="flex-1 border rounded px-2 py-1.5">
+      <button class="bg-[#4F46E5] text-white rounded px-4 py-1.5 hover:bg-[#4338CA]">Alta</button>
+    </form>
+    {% if distribuidores %}
+    <div class="mt-3 text-xs text-slate-500">
+      {{ distribuidores | length }} distribuidor(es):
+      {% for d in distribuidores %}<span class="inline-block bg-slate-100 rounded px-2 py-0.5 mr-1 mb-1">{{ d.name }}</span>{% endfor %}
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- alta de código -->
+  <div class="bg-white shadow-sm rounded p-4">
+    <div class="font-semibold text-slate-700 mb-1">Nuevo código de promoción</div>
+    <p class="text-xs text-slate-400 mb-3">Código + % de descuento + distribuidor. Se aplica al contratar.</p>
+    {% if distribuidores %}
+    <form method="post" action="/admin/catalog/promotions/new" class="space-y-2 text-sm">
+      <div class="flex gap-2">
+        <input type="text" name="code" placeholder="CÓDIGO" required
+               class="flex-1 border rounded px-2 py-1.5 font-mono uppercase">
+        <div class="flex items-center border rounded px-2">
+          <input type="number" name="discount_pct" min="1" max="100" step="0.01" placeholder="%" required
+                 class="w-20 py-1.5 outline-none"><span class="text-slate-400">%</span>
+        </div>
+      </div>
+      <select name="distributor_id" required class="w-full border rounded px-2 py-1.5">
+        <option value="">— distribuidor —</option>
+        {% for d in distribuidores %}<option value="{{ d.id }}">{{ d.name }}</option>{% endfor %}
+      </select>
+      <button class="bg-[#4F46E5] text-white rounded px-4 py-1.5 hover:bg-[#4338CA] w-full">Crear código</button>
+    </form>
+    {% else %}
+    <p class="text-sm text-amber-600">Da de alta un distribuidor primero.</p>
+    {% endif %}
+  </div>
+</div>
+
+<div class="bg-white shadow-sm rounded overflow-x-auto">
+  <table class="w-full text-sm">
+    <thead class="bg-slate-100 text-xs uppercase text-slate-600">
+      <tr><th class="px-3 py-2 text-left">Código</th><th class="px-3 py-2 text-left">Distribuidor</th>
+        <th class="px-3 py-2 text-right">Descuento</th><th class="px-3 py-2 text-left">Vigencia</th>
+        <th class="px-3 py-2 text-right">Usos</th><th class="px-3 py-2 text-left">Activo</th></tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr class="border-t"><td class="px-3 py-2 font-mono">{{ r.code }}</td>
+        <td class="px-3 py-2">{{ r.distributor_name or '—' }}</td>
+        <td class="px-3 py-2 text-right">
+          {% if r.discount_pct %}{{ r.discount_pct }}%{% else %}${{ '%.2f'|format((r.discount_cents or 0)/100) }}{% endif %}
+        </td>
+        <td class="px-3 py-2 text-xs">{{ r.valid_from.strftime('%Y-%m-%d') }} → {{ r.valid_to.strftime('%Y-%m-%d') }}</td>
+        <td class="px-3 py-2 text-right">{{ r.uses_count }}{% if r.max_uses %} / {{ r.max_uses }}{% endif %}</td>
+        <td class="px-3 py-2">{{ 'si' if r.is_active else 'no' }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="px-3 py-4 text-center text-slate-400">Sin códigos todavía.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

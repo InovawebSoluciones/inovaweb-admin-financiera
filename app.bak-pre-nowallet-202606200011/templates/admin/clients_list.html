@@ -1,0 +1,27 @@
+{% extends "admin/_layout.html" %}
+{% block heading %}Clientes{% endblock %}
+{% block content %}
+<div class="flex justify-between items-center mb-4">
+  {# Filtros via HTMX: cada cambio hace hx-get y reemplaza #clients-table #}
+  <form class="flex gap-2"
+        hx-get="/admin/clients"
+        hx-target="#clients-table"
+        hx-trigger="submit, keyup changed delay:400ms from:input[name='q'], change from:select[name='page_status']"
+        hx-push-url="true">
+    <input name="q" value="{{ q or '' }}" placeholder="Buscar por nombre o RFC"
+           class="border rounded px-3 py-1.5 text-sm w-64">
+    <select name="page_status" class="border rounded px-2 py-1.5 text-sm">
+      <option value="">Todos</option>
+      <option value="active"    {% if page_status=='active' %}selected{% endif %}>Activos</option>
+      <option value="suspended" {% if page_status=='suspended' %}selected{% endif %}>Suspendidos</option>
+      <option value="cancelled" {% if page_status=='cancelled' %}selected{% endif %}>Cancelados</option>
+    </select>
+    <button class="bg-slate-200 px-3 rounded text-sm">Filtrar</button>
+  </form>
+  <a href="/admin/clients/new"
+     class="bg-[#0B1020] text-white text-sm px-4 py-2 rounded">+ Nuevo cliente</a>
+</div>
+<div id="clients-table">
+  {% include "admin/_clients_table.html" %}
+</div>
+{% endblock %}

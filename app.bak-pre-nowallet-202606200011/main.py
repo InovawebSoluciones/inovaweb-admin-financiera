@@ -1,0 +1,191 @@
+"""Inovaweb CAF - entrypoint FastAPI.
+
+Mismo backend sirve admin.inovaweb.com.mx y app.inovaweb.com.mx.
+El routing por host se aplica mediante middleware que valida que cada
+prefijo de path solo se sirva en su dominio correcto.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from fastapi import FastAPI, HTTPException, Request, status
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.base import BaseHTTPMiddleware
+
+from app.core.config import get_settings
+from app.core.observability import RequestContextMiddleware, configure_logging
+from app.routers import (
+    adjustments_router,
+    admin_router,
+    api_router,
+    auth_router,
+    catalog_plans_router,
+    catalog_promos_router,
+    catalog_read_router,
+    catalog_services_router,
+    client_account_router,
+    email_providers_router,
+    health_router,
+    org_admin_router,
+    orgs_router,
+    portal_router,
+    reports_router,
+    security_router,
+    users_router,
+    webhooks_router,
+)
+
+configure_logging()
+log = logging.getLogger("main")
+settings = get_settings()
+
+app = FastAPI(
+    title="Inovaweb CAF",
+    version="0.1.0",
+    docs_url="/docs" if settings.ENV == "dev" else None,
+    redoc_url="/redoc" if settings.ENV == "dev" else None,
+    openapi_url="/openapi.json" if settings.ENV == "dev" else None,
+)
+
+
+# ---------------------------------------------------------------------
+# host enforcement middleware
+# ---------------------------------------------------------------------
+
+
+class HostEnforcementMiddleware(BaseHTTPMiddleware):
+    """Cada prefijo solo se permite en su host correspondiente.
+
+    /admin/* solo en ADMIN_DOMAIN
+    /portal/* solo en PORTAL_DOMAIN
+    /health, /login, /logout, /signup-request, /api/*, /webhooks/* en ambos
+    En dev (sin host bien definido) no se restringe.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        host = (request.headers.get("host") or "").split(":")[0].lower()
+        path = request.url.path
+
+        if settings.ENV != "dev":
+            if path.startswith("/admin") and host != settings.ADMIN_DOMAIN.lower():
+                return RedirectResponse(
+                    f"https://{settings.ADMIN_DOMAIN}{path}",
+                    status_code=status.HTTP_308_PERMANENT_REDIRECT,
+                )
+            if path.startswith("/portal") and host != settings.PORTAL_DOMAIN.lower():
+                return RedirectResponse(
+                    f"https://{settings.PORTAL_DOMAIN}{path}",
+                    status_code=status.HTTP_308_PERMANENT_REDIRECT,
+                )
+
+        return await call_next(request)
+
+
+# orden: request-id PRIMERO para tener rid en logs aun si host falla
+app.add_middleware(RequestContextMiddleware)
+app.add_middleware(HostEnforcementMiddleware)
+
+
+# ---------------------------------------------------------------------
+# static
+# ---------------------------------------------------------------------
+
+
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+
+# ---------------------------------------------------------------------
+# routers
+# ---------------------------------------------------------------------
+
+
+app.include_router(health_router.router)
+app.include_router(auth_router.router)
+app.include_router(admin_router.router)
+app.include_router(portal_router.router)
+app.include_router(api_router.router)
+app.include_router(orgs_router.router)
+app.include_router(catalog_services_router.router)
+app.include_router(catalog_plans_router.router)
+app.include_router(catalog_promos_router.router)
+app.include_router(users_router.router)
+app.include_router(adjustments_router.router)
+app.include_router(org_admin_router.router)
+app.include_router(reports_router.router)
+app.include_router(catalog_read_router.router)
+app.include_router(client_account_router.router)
+app.include_router(security_router.router)
+app.include_router(email_providers_router.router)
+app.include_router(webhooks_router.router)
+
+
+# ---------------------------------------------------------------------
+# raiz: redirige segun host
+# ---------------------------------------------------------------------
+
+
+@app.get("/")
+async def root(request: Request):
+    host = (request.headers.get("host") or "").split(":")[0].lower()
+    if host == settings.PORTAL_DOMAIN.lower():
+        return RedirectResponse("/portal/dashboard")
+    return RedirectResponse("/admin/dashboard")
+
+
+# ---------------------------------------------------------------------
+# error handler global (JSON para API, HTML mantiene su flujo)
+# ---------------------------------------------------------------------
+
+
+templates = Jinja2Templates(directory="app/templates")
+
+
+def _is_ui(path: str) -> bool:
+    """True para las pantallas HTML del panel/portal (admin, portal, login...)."""
+    return (
+        path.startswith("/admin")
+        or path.startswith("/portal")
+        or path in ("/", "/login", "/logout", "/signup-request")
+    )
+
+
+@app.exception_handler(StarletteHTTPException)
+async def http_exc_handler(request: Request, exc: StarletteHTTPException):
+    # APIs/webhooks/máquina -> JSON (contrato intacto). Solo el panel HTML recibe
+    # trato amigable: sesión caducada -> login; otros errores -> página limpia.
+    if not _is_ui(request.url.path):
+        return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+    if exc.status_code == status.HTTP_401_UNAUTHORIZED:
+        return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+    return templates.TemplateResponse(
+        request, "error.html",
+        {"code": exc.status_code, "detail": exc.detail},
+        status_code=exc.status_code,
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exc_handler(request: Request, exc: Exception):
+    """Errores no controlados: log con traza + página limpia en el panel HTML."""
+    log.exception("unhandled_exception", extra={"path": request.url.path})
+    if not _is_ui(request.url.path):
+        return JSONResponse({"detail": "error interno"}, status_code=500)
+    return templates.TemplateResponse(
+        request, "error.html",
+        {"code": 500, "detail": "Ocurrió un error inesperado. Intenta de nuevo."},
+        status_code=500,
+    )
+
+
+@app.on_event("startup")
+async def on_startup() -> None:
+    log.info("caf_startup", extra={"env": settings.ENV, "port": settings.PORT})
+
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    log.info("caf_shutdown")

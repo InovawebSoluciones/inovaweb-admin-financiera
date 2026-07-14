@@ -1,0 +1,52 @@
+{% extends "admin/_layout.html" %}
+{% block heading %}Facturas{% endblock %}
+{% block content %}
+<div class="flex justify-between items-center mb-4">
+  <h2 class="text-sm text-slate-500">Listado de facturas emitidas</h2>
+  {# Forzar cierre mensual: POST al endpoint real (devuelve JSON). HTMX muestra
+     el resultado en #closing-result sin recargar la pagina. #}
+  <button class="bg-[#0B1020] text-white text-sm px-4 py-2 rounded"
+          hx-post="/admin/billing/run-closing"
+          hx-target="#closing-result"
+          hx-swap="innerHTML"
+          hx-confirm="Forzar el cierre mensual ahora?">
+    Forzar cierre mensual
+  </button>
+</div>
+<div id="closing-result" class="text-xs text-slate-600 mb-3"></div>
+<div class="bg-white shadow-sm rounded overflow-x-auto">
+  <table class="w-full text-sm">
+    <thead class="bg-slate-100 text-xs uppercase text-slate-600">
+      <tr><th class="px-3 py-2 text-left">ID</th><th class="px-3 py-2 text-left">Cliente</th>
+        <th class="px-3 py-2 text-left">Periodo</th><th class="px-3 py-2 text-right">Total</th>
+        <th class="px-3 py-2 text-left">Estado</th><th class="px-3 py-2 text-left">UUID</th>
+        <th class="px-3 py-2 text-left">Emision</th><th class="px-3 py-2 text-left">Descargas</th></tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr class="border-t">
+        <td class="px-3 py-2">#{{ r.id }}</td>
+        <td class="px-3 py-2">{{ r.legal_name }}</td>
+        <td class="px-3 py-2 text-xs">{{ r.period_start }} - {{ r.period_end }}</td>
+        <td class="px-3 py-2 text-right">${{ '%.2f'|format(r.total_cents/100) }}</td>
+        <td class="px-3 py-2"><span class="text-xs px-2 py-0.5 rounded
+          {% if r.status=='paid' %}bg-green-100 text-green-700
+          {% elif r.status=='stamped' %}bg-[#EEF2FF] text-[#4338CA]
+          {% elif r.status=='failed' %}bg-red-100 text-red-700
+          {% else %}bg-slate-200 text-slate-700{% endif %}">{{ r.status }}</span></td>
+        <td class="px-3 py-2 font-mono text-xs">{{ r.uuid_cfdi or '-' }}</td>
+        <td class="px-3 py-2 text-xs">{{ r.created_at.strftime('%Y-%m-%d') }}</td>
+        <td class="px-3 py-2 text-xs">
+          {% if r.status in ['stamped','paid'] %}
+            <a class="text-[#4F46E5] mr-2" href="/admin/billing/invoices/{{ r.id }}.pdf">PDF</a>
+            <a class="text-[#4F46E5]" href="/admin/billing/invoices/{{ r.id }}.xml">XML</a>
+          {% else %}
+            <span class="text-slate-400">no disponible</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

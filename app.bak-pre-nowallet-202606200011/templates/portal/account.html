@@ -1,0 +1,19 @@
+{% extends "portal/_layout.html" %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-4">Mi cuenta</h1>
+<div class="bg-white rounded shadow-sm p-6 max-w-xl">
+  <dl class="grid grid-cols-3 gap-y-2 text-sm">
+    <dt class="text-slate-500">Razon social</dt><dd class="col-span-2">{{ client.legal_name }}</dd>
+    <dt class="text-slate-500">RFC</dt><dd class="col-span-2 font-mono">{{ client.rfc }}</dd>
+    <dt class="text-slate-500">Email facturacion</dt><dd class="col-span-2">{{ client.billing_email }}</dd>
+    <dt class="text-slate-500">Telefono</dt><dd class="col-span-2">{{ client.contact_phone or '-' }}</dd>
+    <dt class="text-slate-500">CP</dt><dd class="col-span-2">{{ client.zip_code }}</dd>
+    <dt class="text-slate-500">Uso CFDI</dt><dd class="col-span-2">{{ client.cfdi_use }}</dd>
+    <dt class="text-slate-500">Regimen</dt><dd class="col-span-2">{{ client.tax_regime }}</dd>
+    <dt class="text-slate-500">Estado</dt><dd class="col-span-2">{{ client.status }}</dd>
+  </dl>
+  <p class="mt-4 text-xs text-slate-500">
+    Para modificar datos fiscales contacta a tu asesor Inovaweb.
+  </p>
+</div>
+{% endblock %}

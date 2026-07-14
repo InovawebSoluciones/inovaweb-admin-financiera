@@ -1,0 +1,45 @@
+{% extends "portal/_layout.html" %}
+{% block content %}
+<h1 class="text-2xl font-bold mb-4">Recargar saldo</h1>
+<div class="bg-white rounded shadow-sm p-6 max-w-lg">
+  <p class="text-sm text-slate-600 mb-4">
+    Selecciona el monto a recargar. Seras redirigido a la pasarela de pago
+    segura. Al confirmarse el pago, el saldo se acreditara automaticamente.
+  </p>
+
+  {# POST a /portal/recharge: el backend valida piso/techo y crea el intento. #}
+  <form method="post" action="/portal/recharge" class="space-y-4">
+    <div>
+      <label class="block text-sm font-medium text-slate-700">Monto (MXN)</label>
+      <div class="flex items-center gap-2 mt-1">
+        <span class="text-slate-500">$</span>
+        <input name="amount_pesos" type="number"
+               min="{{ (min_cents / 100)|int }}"
+               max="{{ (max_cents / 100)|int }}"
+               step="1" required
+               class="w-full border rounded px-3 py-2"
+               placeholder="Ej. 500">
+      </div>
+      <p class="text-xs text-slate-500 mt-1">
+        Minimo ${{ '%.2f'|format(min_cents / 100) }} -
+        maximo ${{ '%.2f'|format(max_cents / 100) }} MXN.
+      </p>
+    </div>
+
+    <div>
+      <label class="block text-sm font-medium text-slate-700">Metodo de pago</label>
+      <select name="method" class="mt-1 w-full border rounded px-3 py-2">
+        <option value="card">Tarjeta de credito/debito</option>
+        <option value="spei">Transferencia SPEI</option>
+        <option value="oxxo">Pago en OXXO</option>
+      </select>
+    </div>
+
+    <div class="flex gap-2">
+      <button type="submit"
+              class="bg-[#0B1020] text-white px-4 py-2 rounded">Continuar al pago</button>
+      <a href="/portal/dashboard" class="px-4 py-2 rounded border">Cancelar</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
