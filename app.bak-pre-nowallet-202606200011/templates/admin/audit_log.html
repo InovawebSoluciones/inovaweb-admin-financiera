@@ -1,0 +1,34 @@
+{% extends "admin/_layout.html" %}
+{% block heading %}Audit log{% endblock %}
+{% block content %}
+<form method="get" class="flex gap-2 mb-3">
+  <input name="entity" value="{{ entity or '' }}" placeholder="entity_type"
+         class="border rounded px-2 py-1 text-sm">
+  <input name="actor" value="{{ actor or '' }}" placeholder="actor_user_id" type="number"
+         class="border rounded px-2 py-1 text-sm w-32">
+  <button class="bg-slate-200 px-3 rounded text-sm">Filtrar</button>
+</form>
+<div class="bg-white shadow-sm rounded overflow-x-auto">
+  <table class="w-full text-xs">
+    <thead class="bg-slate-100 uppercase text-slate-600">
+      <tr><th class="px-3 py-2 text-left">Fecha</th><th class="px-3 py-2 text-left">Actor</th>
+        <th class="px-3 py-2 text-left">IP</th><th class="px-3 py-2 text-left">Entidad</th>
+        <th class="px-3 py-2 text-left">ID</th><th class="px-3 py-2 text-left">Accion</th>
+        <th class="px-3 py-2 text-left">Request</th></tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr class="border-t">
+        <td class="px-3 py-1.5">{{ r.occurred_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+        <td class="px-3 py-1.5">{{ r.actor_email or 'system' }}</td>
+        <td class="px-3 py-1.5 font-mono">{{ r.actor_ip or '-' }}</td>
+        <td class="px-3 py-1.5">{{ r.entity_type }}</td>
+        <td class="px-3 py-1.5">{{ r.entity_id or '-' }}</td>
+        <td class="px-3 py-1.5">{{ r.action }}</td>
+        <td class="px-3 py-1.5 font-mono">{{ r.request_id or '-' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

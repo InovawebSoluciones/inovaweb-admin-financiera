@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+{% block title %}Error {{ code }} — Inovaweb{% endblock %}
+{% block content %}
+<div class="min-h-[70vh] flex items-center justify-center">
+  <div class="bg-white shadow-sm rounded-lg p-8 max-w-md w-full text-center">
+    <div class="text-5xl font-display font-bold text-[#4F46E5] mb-2">{{ code }}</div>
+    <div class="text-slate-700 font-semibold mb-1">
+      {% if code == 403 %}No tienes permiso para esta sección
+      {% elif code == 404 %}Página no encontrada
+      {% elif code == 409 %}No se pudo completar la acción
+      {% elif code >= 500 %}Ocurrió un error en el servidor
+      {% else %}{{ detail or 'Algo salió mal' }}{% endif %}
+    </div>
+    <p class="text-sm text-slate-400 mb-6">{{ detail or 'Intenta de nuevo o vuelve al inicio.' }}</p>
+    <div class="flex gap-3 justify-center">
+      <a href="/admin/dashboard" class="bg-[#4F46E5] text-white rounded px-4 py-2 hover:bg-[#4338CA] text-sm">Ir al inicio</a>
+      <a href="/login" class="border border-slate-300 text-slate-600 rounded px-4 py-2 hover:bg-slate-50 text-sm">Iniciar sesión</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

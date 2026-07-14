@@ -1,0 +1,22 @@
+{% extends "admin/_layout.html" %}
+{% block heading %}Productos{% endblock %}
+{% block content %}
+<div class="bg-white shadow-sm rounded overflow-x-auto">
+  <table class="w-full text-sm">
+    <thead class="bg-slate-100 text-xs uppercase text-slate-600">
+      <tr><th class="px-3 py-2 text-left">Codigo</th><th class="px-3 py-2 text-left">Nombre</th>
+        <th class="px-3 py-2 text-left">Clave SAT</th><th class="px-3 py-2 text-left">Unidad</th>
+        <th class="px-3 py-2 text-left">Activo</th></tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr class="border-t"><td class="px-3 py-2 font-mono">{{ r.code }}</td>
+        <td class="px-3 py-2">{{ r.name }}</td>
+        <td class="px-3 py-2 font-mono">{{ r.sat_key }}</td>
+        <td class="px-3 py-2 font-mono">{{ r.unit_sat_key }}</td>
+        <td class="px-3 py-2">{{ 'si' if r.is_active else 'no' }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

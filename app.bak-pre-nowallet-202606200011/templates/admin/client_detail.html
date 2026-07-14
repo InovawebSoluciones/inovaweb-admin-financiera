@@ -1,0 +1,112 @@
+{% extends "admin/_layout.html" %}
+{% block heading %}Cliente #{{ c.id }}{% endblock %}
+{% block content %}
+<div class="bg-white p-6 rounded shadow-sm">
+  <h2 class="text-xl font-bold">{{ c.legal_name }}</h2>
+  <p class="text-sm text-slate-500 font-mono">{{ c.rfc }}</p>
+  <p class="mt-2 text-sm">
+    Estado:
+    <span class="text-xs px-2 py-0.5 rounded
+      {% if c.status=='active' %}bg-green-100 text-green-700
+      {% elif c.status=='suspended' %}bg-yellow-100 text-yellow-700
+      {% else %}bg-slate-200 text-slate-700{% endif %}">{{ c.status }}</span>
+  </p>
+
+  <div class="grid grid-cols-2 gap-x-8 gap-y-2 mt-6 text-sm">
+    <div><b>Email facturacion:</b> {{ c.billing_email }}</div>
+    <div><b>Telefono:</b> {{ c.contact_phone or '-' }}</div>
+    <div><b>CP:</b> {{ c.zip_code }}</div>
+    <div><b>Regimen:</b> {{ c.tax_regime }}</div>
+    <div><b>Uso CFDI:</b> {{ c.cfdi_use }}</div>
+    <div><b>Alta:</b> {{ c.created_at.strftime('%Y-%m-%d') }}</div>
+  </div>
+
+  <!-- ── Cuenta y consumos (IA + mensajería) ─────────────────────────── -->
+  <h3 class="font-semibold mt-8 mb-3">Cuenta y consumos</h3>
+  <div class="grid grid-cols-3 gap-4 mb-4">
+    <div class="bg-emerald-50 border border-emerald-100 p-4 rounded">
+      <div class="text-xs text-slate-500 uppercase">Saldo actual</div>
+      <div class="text-2xl font-bold text-emerald-700">
+        {% if saldo_cents is not none %}${{ '%.2f'|format(saldo_cents/100) }}{% else %}—{% endif %}
+        <span class="text-sm font-normal text-slate-400">MXN</span>
+      </div>
+    </div>
+    <div class="bg-rose-50 border border-rose-100 p-4 rounded">
+      <div class="text-xs text-slate-500 uppercase">Consumo acumulado</div>
+      <div class="text-2xl font-bold text-rose-700">${{ '%.2f'|format(total_consumo/100) }}
+        <span class="text-sm font-normal text-slate-400">MXN</span>
+      </div>
+    </div>
+    <div class="bg-slate-50 border border-slate-200 p-4 rounded">
+      <div class="text-xs text-slate-500 uppercase">Movimientos</div>
+      <div class="text-2xl font-bold text-slate-700">{{ consumos|length }}</div>
+    </div>
+  </div>
+
+  <table class="w-full text-sm mb-2">
+    <thead class="bg-slate-100 text-xs uppercase text-slate-600">
+      <tr>
+        <th class="px-3 py-2 text-left">Fecha</th>
+        <th class="px-3 py-2 text-left">Tipo</th>
+        <th class="px-3 py-2 text-left">Concepto</th>
+        <th class="px-3 py-2 text-right">Monto</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in consumos %}
+      <tr class="border-t">
+        <td class="px-3 py-2 font-mono text-xs">{{ (e.occurred_at or e.recorded_at or '')[:19]|replace('T',' ') }}</td>
+        <td class="px-3 py-2">
+          {% if e.source_slug=='medidor' %}
+            <span class="text-xs px-2 py-0.5 rounded bg-indigo-100 text-indigo-700">IA</span>
+          {% else %}
+            <span class="text-xs px-2 py-0.5 rounded bg-teal-100 text-teal-700">Mensajería</span>
+          {% endif %}
+        </td>
+        <td class="px-3 py-2">{{ e.description }}</td>
+        <td class="px-3 py-2 text-right font-mono text-rose-700">-${{ '%.2f'|format((e.amount_cents or 0)/100) }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="px-3 py-6 text-center text-slate-400">Sin consumos registrados.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="text-xs text-slate-400">Saldo = wallet del Medidor (prepago). Consumos = asientos de Finanzas (IA vía Medidor, mensajería vía Centro). El CAF tarifica y descuenta.</p>
+
+  <h3 class="font-semibold mt-8 mb-2">IDs externos en cores</h3>
+  <ul class="text-xs font-mono space-y-1">
+    <li>medidor:  {{ c.medidor_account_id or '-' }}</li>
+    <li>hub:      {{ c.hub_account_id or '-' }}</li>
+    <li>finanzas: {{ c.finanzas_account_id or '-' }}</li>
+    <li>mensajes: {{ c.messages_account_id or '-' }}</li>
+  </ul>
+
+  <h3 class="font-semibold mt-6 mb-2">Suscripciones</h3>
+  <table class="w-full text-sm">
+    <thead class="bg-slate-100 text-xs uppercase text-slate-600">
+      <tr><th class="px-3 py-2 text-left">ID</th><th class="px-3 py-2 text-left">Plan</th>
+        <th class="px-3 py-2 text-left">Estado</th><th class="px-3 py-2 text-left">Desde</th></tr>
+    </thead>
+    <tbody>
+      {% for s in subs %}
+      <tr class="border-t"><td class="px-3 py-2">#{{ s.id }}</td>
+        <td class="px-3 py-2">{{ s.plan_name }} ({{ s.plan_code }})</td>
+        <td class="px-3 py-2">{{ s.status }}</td>
+        <td class="px-3 py-2">{{ s.started_at }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  {% if c.status == 'active' %}
+  <form method="post" action="/admin/clients/{{ c.id }}/suspend" class="mt-6 flex gap-2">
+    <input name="reason" required placeholder="Motivo de suspension"
+           class="flex-1 border rounded px-3 py-2 text-sm">
+    <button class="bg-yellow-600 text-white px-4 py-2 rounded text-sm">Suspender</button>
+  </form>
+  {% elif c.status == 'suspended' %}
+  <form method="post" action="/admin/clients/{{ c.id }}/reactivate" class="mt-6">
+    <button class="bg-green-600 text-white px-4 py-2 rounded text-sm">Reactivar</button>
+  </form>
+  {% endif %}
+</div>
+{% endblock %}
