@@ -343,7 +343,7 @@ async def _process_wallet_credit(
     # localizar cliente por hub_account_id
     row = (await db.execute(
         text("SELECT id, medidor_account_id, finanzas_account_id, billing_email, "
-             "       legal_name FROM clients WHERE hub_account_id = :h"),
+             "       legal_name, organization_id FROM clients WHERE hub_account_id = :h"),
         {"h": ev["account_id"]},
     )).mappings().first()
     if not row:
@@ -373,7 +373,21 @@ async def _process_wallet_credit(
                  extra={"hub_transaction_id": hub_txn_id})
         return PaidResult(status="duplicate_ignored", recharge_id=recharge_id)
 
-    # medidor.credit() eliminado — el balance vive en prepaid_ledger del CAF
+    # ---- acreditar saldo en el monedero (prepaid_ledger del CAF) ----
+    # Al eliminar la wallet del Medidor el balance vive aqui, pero este abono
+    # FALTABA: el pago se registraba y el saldo nunca subia (bug). Idempotente
+    # por idempotency_key ligada al recharge: un replay del webhook no duplica.
+    _meta_led = _json.dumps({"hub_transaction_id": hub_txn_id,
+                             "recharge_id": recharge_id, "purpose": ev["purpose"]})
+    await db.execute(
+        text("INSERT INTO prepaid_ledger "
+             "(client_id, organization_id, kind, amount_cents, service_code, units, source, idempotency_key, meta) "
+             "VALUES (:cid, :org, 'credit', :amt, NULL, NULL, :src, :k, CAST(:m AS jsonb)) "
+             "ON CONFLICT (client_id, idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING"),
+        {"cid": client_id, "org": row["organization_id"], "amt": amount_cents,
+         "src": reason, "k": f"recarga-{recharge_id}", "m": _meta_led},
+    )
+
     # 2) asiento en Finanzas-Core (idempotente por source_ref determinista)
     finanzas = FinanzasClient()
     try:

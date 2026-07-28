@@ -15,7 +15,7 @@ from app.core.clients.medidor_client import MedidorClient
 from app.core.config import get_settings
 from app.core.database import get_db
 from app.core.jwt_auth import CurrentUser, require_roles
-from app.core.tenancy import assert_client_in_org, resolve_app_org
+from app.core.tenancy import assert_client_in_org, resolve_app_org, resolve_app_org_write
 from app.services.onboarding import OnboardClientPayload, OnboardingError, onboard_client
 from app.services.prepago import PrepagoError, initiate_charge
 from app.services.saas_billing import accrue_transaction
@@ -288,7 +288,7 @@ async def api_client_recharge(
     pago. Body JSON: `{"amount_cents": int}` (min $50 MXN; tope MAX_RECARGA_CENTS).
     Reusa el MISMO piso/techo y la misma `initiate_charge` que el portal HTML.
     """
-    org = await resolve_app_org(request, db)
+    org = await resolve_app_org_write(request, db)
     await assert_client_in_org(db, client_id, org)
     try:
         body = await request.json()
@@ -396,7 +396,7 @@ async def api_client_charge(
 ) -> ChargeResponse:
     """Cobra `units` de `service_code` al cliente: tarifica (services.unit_price_cents),
     valida saldo del CAF y debita en el libro prepaid_ledger. 402 si no alcanza."""
-    org = await resolve_app_org(request, db)
+    org = await resolve_app_org_write(request, db)
     await assert_client_in_org(db, client_id, org)
     await db.execute(text("SELECT pg_advisory_xact_lock(:c)"), {"c": client_id})
     if body.units <= 0:
@@ -480,7 +480,7 @@ class AppOnboardResponse(BaseModel):
 async def api_app_onboard(
     body: AppOnboardBody, request: Request, db: AsyncSession = Depends(get_db),
 ) -> AppOnboardResponse:
-    org = await resolve_app_org(request, db)
+    org = await resolve_app_org_write(request, db)
     rid = f"app-{body.external_ref}" if body.external_ref else None
     payload = OnboardClientPayload(
         legal_name=body.trade_name, trade_name=body.trade_name,

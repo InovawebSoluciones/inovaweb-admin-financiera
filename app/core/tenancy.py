@@ -31,18 +31,16 @@ def _bearer(request: Request) -> str:
     return auth.removeprefix("Bearer ").strip()
 
 
-async def resolve_app_org(request: Request, db: AsyncSession) -> int:
-    """Devuelve el `organization_id` dueño de la API key de la peticion.
+async def _resolve_app_org_row(request: Request, db: AsyncSession) -> tuple[int, str]:
+    """Devuelve (organization_id, scope) dueño de la API key de la peticion.
 
-    1) Busca el hash de la llave en `api_keys` (no revocada) -> su organization_id.
-    2) Fallback legacy: si coincide con SCRAPING_ADMIN_KEY/SWIGG_ADMIN_KEY del
-       entorno -> org 1 (Inovaweb). Permite migrar sin romper apps existentes.
-    Lanza 401 si la llave no resuelve a ninguna org.
+    scope = 'admin' para las llaves legacy de plataforma y para llaves sin scope
+    explicito (compat hacia atras). Lanza 401 si la llave no resuelve a ninguna org.
     """
     token = _bearer(request)
     kh = hash_key(token)
     row = (await db.execute(
-        text("SELECT id, organization_id FROM api_keys "
+        text("SELECT id, organization_id, scope FROM api_keys "
              "WHERE key_hash = :h AND revoked_at IS NULL"),
         {"h": kh},
     )).first()
@@ -52,7 +50,7 @@ async def resolve_app_org(request: Request, db: AsyncSession) -> int:
             text("UPDATE api_keys SET last_used_at = now() WHERE id = :id"),
             {"id": row[0]},
         )
-        return int(row[1])
+        return int(row[1]), (row[2] or "admin")
 
     # fallback legacy (llaves en .env de Inovaweb -> org plataforma)
     from app.core.config import get_settings
@@ -61,9 +59,31 @@ async def resolve_app_org(request: Request, db: AsyncSession) -> int:
     if getattr(s, "SWIGG_ADMIN_KEY", None) is not None:
         legacy.append(s.SWIGG_ADMIN_KEY.get_secret_value())
     if token in legacy:
-        return PLATFORM_ORG_ID
+        return PLATFORM_ORG_ID, "admin"
 
     raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid app key")
+
+
+async def resolve_app_org(request: Request, db: AsyncSession) -> int:
+    """`organization_id` dueño de la API key (uso general/lectura)."""
+    org, _scope = await _resolve_app_org_row(request, db)
+    return org
+
+
+async def resolve_app_org_write(request: Request, db: AsyncSession) -> int:
+    """Como `resolve_app_org` pero EXIGE permiso de escritura. [FEA 2026-07-27]
+
+    Las llaves con scope 'readonly' NO pueden mover dinero (charge/recharge/
+    onboard): antes el scope se ignoraba por completo y una llave etiquetada
+    readonly podia cobrar, debitar saldo y crear clientes con credito.
+    """
+    org, scope = await _resolve_app_org_row(request, db)
+    if scope == "readonly":
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "esta API key es de solo lectura; no puede realizar esta operacion",
+        )
+    return org
 
 
 async def assert_client_in_org(db: AsyncSession, client_id: int, org_id: int) -> None:
