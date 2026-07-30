@@ -119,9 +119,17 @@
 | Clasificar respuesta WhatsApp | `routers/whatsapp_inbox.py` | **0** |
 | Clasificar mercado de artículo | `workers/tasks.py:904` | **0** (absorbido en el envío) |
 
-### 🟠 Precios posiblemente mal calibrados
-- `analisis_ia` = 10 cr: es la llamada con MÁS tokens del sistema (lee brief+KB+campaña+métricas) y cobra 10× menos que un correo.
-- `agente_corrida` = 10 cr: precio plano sin importar cuántas herramientas ejecute.
+### ✅ COBRO POR CONSUMO implementado 2026-07-30 (`analisis_ia`, `agente_corrida`)
+Antes: precio PLANO de 10 cr sin importar el tamaño. Ahora: **1 unidad = 1,000 tokens** (entrada+salida), redondeo hacia arriba, mínimo 1, a **15 cr por unidad**.
+
+| service_code | unit | precio | Fuente de los tokens |
+|---|---|---|---|
+| `analisis_ia` | `1000_tokens` | 15 cr | `resp.usage` de la llamada → `analizar_campana()` devuelve `tokens` → `routers/campanas.py` hace `ceil(tokens/1000)` |
+| `agente_corrida` | `1000_tokens` | 15 cr | `DeepSeekPlanner.ultimo_uso_tokens` → `routers/agente.py` hace `ceil(tokens/1000)`. Las herramientas del plan siguen cobrando su propio servicio. |
+
+**Cómo se fijó el precio:** costo real medido = **4.59 centavos por 1,000 tokens** (deepseek-v4-pro, mezcla entrada/salida). × el margen que ya usaban los correos (~3.4x) ≈ **15 cr**.
+
+**Verificado end-to-end (2026-07-30):** un análisis real consumió **3,395 tokens** → 4 kilotokens → `cobrar(units=4)` → **`charged_cents=60`** ($0.60). Antes ese mismo análisis cobraba $0.10. El cobro de prueba se revirtió (`reverso-prueba-tokens-20260730`).
 
 ### ✅ Corregido 2026-07-30
 1. **`MEDIDOR_BASE_URL`** apuntaba a `http://medidor-api:8000` (contenedor inexistente — el real es `medidor_api` — y en otra red Docker) → `https://medidor.inovaweb.com.mx`.
