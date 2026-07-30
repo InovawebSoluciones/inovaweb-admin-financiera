@@ -55,22 +55,26 @@
 
 ## PARTE 2 — Llamadas a proveedores de IA
 
-### 2A. DeepSeek — DIRECTO desde LiaForge (NO pasa por el Medidor)
-**Config:** `deepseek_base_url=https://api.deepseek.com` · `deepseek_model=deepseek-v4-pro` · key `DEEPSEEK_API_KEY`.
+### 2A. DeepSeek — VÍA el proxy del Medidor (corregido 2026-07-30)
+**Ruta:** LiaForge → `{MEDIDOR_BASE_URL}/llm/deepseek/v1/chat/completions` → `api.deepseek.com`
+**Helper único:** `services/llm_client.py` → `deepseek_client()`. Fail-open: si no hay Medidor configurado, cae a directo (pierde medición, no rompe).
 
 | # | Archivo | Para qué |
 |---|---|---|
-| 1 | `services/email_writer.py:120` | Redacción de correos de campaña |
-| 2 | `services/email_writer.py:232` | Redacción de correos de artículo |
-| 3 | `services/lia_normalizer.py:154` | Mapear columnas de Excel |
-| 4 | `services/brand_dna.py:104` | Brief desde web/documento |
-| 5 | `services/whatsapp_writer.py:187` | Redacción de WhatsApp |
-| 6 | `services/whatsapp_inbound.py:248` | Clasificar respuestas de WA |
-| 7 | `services/analista_campana.py:183` | Análisis estratégico de campaña |
-| 8 | `routers/lia_chat.py:393` | Chatbot Lia |
-| 9 | `agente/planner.py:236` | Planner del Agente |
+| 1 | `services/email_writer.py` (campaña) | Redacción de correos de campaña |
+| 2 | `services/email_writer.py` (clasif. mercado) | Clasificar público del artículo |
+| 3 | `services/email_writer.py` (artículo) | Redacción de correos de artículo |
+| 4 | `services/lia_normalizer.py` | Mapear columnas de Excel |
+| 5 | `services/brand_dna.py` | Brief desde web/documento |
+| 6 | `services/whatsapp_writer.py` | Redacción de WhatsApp (timeout 30s) |
+| 7 | `services/whatsapp_inbound.py` | Clasificar respuestas de WA |
+| 8 | `services/analista_campana.py` | Análisis estratégico de campaña |
+| 9 | `routers/lia_chat.py` | Chatbot Lia |
+| 10 | `agente/planner.py` | Planner del Agente |
 
-⚠️ **Estas 9 NO se miden en el Medidor** — el gasto real de tokens de DeepSeek no queda registrado ahí.
+✅ **Las 10 ya registran tokens y costo real en `events`.** Antes iban directo a `api.deepseek.com` y su consumo era invisible (0 eventos en 30 días).
+
+**Medición verificada (2026-07-30):** un correo de campaña = 3,174 tokens entrada ($0.10) + 3,139 salida ($0.19) = **$0.29 MXN de costo real**, contra $1.00 que se cobra → margen ~3.4x.
 
 ### 2B. Perplexity — VÍA el proxy del Medidor (sí se mide)
 **Ruta:** LiaForge → `{medidor_base_url}/llm/perplexity/v1/chat/completions` → `https://api.perplexity.ai`.
@@ -88,10 +92,42 @@
 
 ---
 
-## PARTE 3 — Hallazgos abiertos (2026-07-30)
+## PARTE 3 — Precios por consumo (ya existía, ahora en uso)
 
-1. 🔴 **DNS interno de Docker en el 94 falla intermitentemente** — rompe LiaForge→Medidor y Medidor→su BD. Sin resolver; requiere reiniciar el daemon de Docker (18 contenedores, varios proyectos). **Pendiente de autorización.**
-2. ✅ **CORREGIDO** `MEDIDOR_BASE_URL` en LiaForge: apuntaba a `http://medidor-api:8000` (nombre inexistente + red Docker distinta) → ahora `https://medidor.inovaweb.com.mx`.
-3. ✅ **CORREGIDO** `DATABASE_URL` del Medidor: apuntaba a `scraping-postgres` (¡BD de otro proyecto!) → ahora `medidor_db`.
-4. 🟠 **9 llamadas a DeepSeek no pasan por el Medidor** → su consumo de tokens no se mide ni se audita centralmente. Sí se cobra al cliente por servicio, pero sin trazabilidad del costo real.
-5. 🟠 El Medidor tiene el proxy de DeepSeek disponible pero **LiaForge no lo usa** (llama directo).
+`llm_pricing` (BD `medidor_ia`) tiene precios por millón de tokens en MXN, separando entrada/salida:
+
+| Proveedor / modelo | Entrada | Salida |
+|---|---|---|
+| deepseek-v4-pro | $30.45/M | $60.90/M |
+| deepseek-v4-flash | $2.45/M | $4.90/M |
+| deepseek-chat / reasoner | $2.45/M | $4.90/M |
+| perplexity sonar-pro | $51/M | $255/M |
+| openai gpt-image-1 | $0.25/imagen | — |
+
+`events` guarda por llamada: `provider_units` (tokens), `llm_pricing_id`, `cost_cents`. El **Medidor solo mide**; el cobro al cliente sigue siendo del CAF (precio plano por `service_code`).
+
+---
+
+## PARTE 4 — Hallazgos abiertos
+
+### 🔴 Servicios con IA que NO cobran nada (pendiente definir precio)
+| Función | Archivo | Cobro actual |
+|---|---|---|
+| Chatbot Lia | `routers/lia_chat.py` | **0** |
+| Brief desde web | `routers/briefs.py` → `analizar-sitio` | **0** |
+| Brief desde documento | `routers/briefs.py` → `analizar-documento` | **0** |
+| Clasificar respuesta WhatsApp | `routers/whatsapp_inbox.py` | **0** |
+| Clasificar mercado de artículo | `workers/tasks.py:904` | **0** (absorbido en el envío) |
+
+### 🟠 Precios posiblemente mal calibrados
+- `analisis_ia` = 10 cr: es la llamada con MÁS tokens del sistema (lee brief+KB+campaña+métricas) y cobra 10× menos que un correo.
+- `agente_corrida` = 10 cr: precio plano sin importar cuántas herramientas ejecute.
+
+### ✅ Corregido 2026-07-30
+1. **`MEDIDOR_BASE_URL`** apuntaba a `http://medidor-api:8000` (contenedor inexistente — el real es `medidor_api` — y en otra red Docker) → `https://medidor.inovaweb.com.mx`.
+2. **`medidor_api` no estaba en la red de su base de datos.** Su BD (`medidor_ia`) vive DENTRO de `scraping-postgres`, en la red `scraping-universidades_default`, pero el contenedor solo estaba en `medidor_ia_default` → **no podía resolver su propio Postgres** (`gaierror`), así que TODA ruta con auth devolvía 500. Fix: `docker network connect scraping-universidades_default medidor_api`. **Esta era la causa de los fallos de enriquecimiento de todo el día.**
+   **PERSISTIDO** en `/opt/medidor_ia/docker-compose.yml` (red externa `scraping_net` → `scraping-universidades_default`); verificado que sobrevive `docker compose up`. Respaldo: `docker-compose.yml.bak-net-*`.
+3. Las 10 llamadas a DeepSeek ruteadas por el proxy del Medidor (ver Parte 2A).
+
+### ⚠️ Nota
+El proxy del Medidor tiene tope de **60 llamadas/min por tenant** (`PROXY_TENANT_RATE_PER_MIN`, puesto en la auditoría FEA del 2026-07-27). Con lotes grandes de correos podría topar; ajustar si hace falta.
