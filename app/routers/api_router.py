@@ -448,6 +448,13 @@ async def api_client_charge(
         text("SELECT balance_cents FROM v_client_balance WHERE client_id=:c"),
         {"c": client_id},
     )).scalar() or 0)
+    if amount <= 0:
+        # Nada que cobrar: servicio gratuito por catalogo (p.ej. `scraping` con
+        # unit_price_cents=0) o consumo de IA que redondea a menos de 1 centavo.
+        # El ledger tiene CHECK (amount_cents > 0), asi que NO se inserta: se
+        # responde OK con charged_cents=0 en vez de reventar con un 500.
+        return ChargeResponse(ok=True, client_id=client_id, service_code=body.service_code,
+                              units=body.units, charged_cents=0, balance_cents=bal)
     if bal < amount:
         raise HTTPException(
             status.HTTP_402_PAYMENT_REQUIRED,

@@ -62,6 +62,7 @@ async def _client_or_403(user: CurrentUser, db: AsyncSession) -> dict:
 @router.get("/dashboard", response_class=HTMLResponse)
 async def dashboard(
     request: Request,
+    recarga: str | None = None,
     user: CurrentUser = Depends(_CLIENT),
     db: AsyncSession = Depends(get_db),
 ) -> HTMLResponse:
@@ -110,7 +111,8 @@ async def dashboard(
 
     return templates.TemplateResponse(
         request, "portal/dashboard.html",
-        {"user": user, "client": c, "balance": balance, "usage": usage,
+        {
+            "recien_pagado": recarga == "1","user": user, "client": c, "balance": balance, "usage": usage,
          "plan": dict(plan) if plan else None,
          "next_invoice": next_invoice},
     )

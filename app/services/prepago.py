@@ -158,7 +158,7 @@ async def initiate_charge(
     metadata: dict[str, Any] = {
         "purpose": purpose,
         "caf_client_id": client["id"],
-        "return_url": f"https://{get_settings().PORTAL_DOMAIN}/portal/dashboard",
+        "return_url": f"https://{get_settings().PORTAL_DOMAIN}/portal/dashboard?recarga=1",
     }
     if plan_code:
         metadata["plan_code"] = plan_code

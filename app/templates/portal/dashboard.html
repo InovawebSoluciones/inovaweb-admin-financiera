@@ -1,6 +1,14 @@
 {% extends "portal/_layout.html" %}
 {% block content %}
 <h1 class="text-2xl font-bold mb-4">Hola, {{ client.legal_name }}</h1>
+{% if recien_pagado %}
+<div class="bg-amber-50 border border-amber-200 text-amber-800 rounded p-3 mb-4 text-sm">
+  Estamos confirmando tu pago. Tu saldo se actualizará en unos segundos…
+</div>
+<script>
+  setTimeout(function () { window.location.href = "/portal/dashboard"; }, 4000);
+</script>
+{% endif %}
 <div class="grid sm:grid-cols-3 gap-4">
   <div class="bg-white rounded shadow-sm p-5">
     <div class="text-xs text-slate-500">Saldo disponible</div>
