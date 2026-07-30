@@ -120,16 +120,24 @@
 | Clasificar mercado de artículo | `workers/tasks.py:904` | **0** (absorbido en el envío) |
 
 ### ✅ COBRO POR CONSUMO implementado 2026-07-30 (`analisis_ia`, `agente_corrida`)
-Antes: precio PLANO de 10 cr sin importar el tamaño. Ahora: **1 unidad = 1,000 tokens** (entrada+salida), redondeo hacia arriba, mínimo 1, a **15 cr por unidad**.
+Antes: precio PLANO de 10 cr sin importar el tamaño. Ahora: **1 unidad = 1,000 tokens** (entrada+salida), redondeo hacia arriba, mínimo 1.
+
+**⚠️ LA RELACIÓN TOKENS→CRÉDITO YA ESTABA ESTABLECIDA — no inventar precios.** Vive en `price_catalog` (BD del CAF):
+
+| meter | unit_code | public_price_micros | cost_price_micros |
+|---|---|---|---|
+| `ia` | `token` | **60** | 30 |
+
+60 micros de peso por token ⇒ **1 crédito = 166.67 tokens** ⇒ **6 créditos por cada 1,000 tokens** (margen 2x sobre el costo). Por eso `services.unit_price_cents = 6` para ambos servicios.
 
 | service_code | unit | precio | Fuente de los tokens |
 |---|---|---|---|
-| `analisis_ia` | `1000_tokens` | 15 cr | `resp.usage` de la llamada → `analizar_campana()` devuelve `tokens` → `routers/campanas.py` hace `ceil(tokens/1000)` |
-| `agente_corrida` | `1000_tokens` | 15 cr | `DeepSeekPlanner.ultimo_uso_tokens` → `routers/agente.py` hace `ceil(tokens/1000)`. Las herramientas del plan siguen cobrando su propio servicio. |
+| `analisis_ia` | `1000_tokens` | 6 cr | `resp.usage` → `analizar_campana()` devuelve `tokens` → `routers/campanas.py` hace `ceil(tokens/1000)` |
+| `agente_corrida` | `1000_tokens` | 6 cr | `DeepSeekPlanner.ultimo_uso_tokens` → `routers/agente.py` hace `ceil(tokens/1000)`. Las herramientas del plan siguen cobrando su propio servicio. |
 
-**Cómo se fijó el precio:** costo real medido = **4.59 centavos por 1,000 tokens** (deepseek-v4-pro, mezcla entrada/salida). × el margen que ya usaban los correos (~3.4x) ≈ **15 cr**.
+**Verificado:** un análisis real consumió **3,395 tokens** → 4 unidades → **24 cr** ($0.24). Antes: 10 cr fijos.
 
-**Verificado end-to-end (2026-07-30):** un análisis real consumió **3,395 tokens** → 4 kilotokens → `cobrar(units=4)` → **`charged_cents=60`** ($0.60). Antes ese mismo análisis cobraba $0.10. El cobro de prueba se revirtió (`reverso-prueba-tokens-20260730`).
+**Arquitectura de precios (documentada en `caf/services/billing.py:233`):** *"el Medidor mide la CANTIDAD (tokens); el CAF aplica el PRECIO PÚBLICO (`price_catalog`). El costo crudo del Medidor NO se factura — es solo para margen/COGS."* Es decir: `llm_pricing`/`service_catalog` del Medidor = **COSTO** (COGS, ~$30.45/M entrada en v4-pro); `price_catalog` del CAF = **PRECIO DE VENTA**.
 
 ### ✅ Corregido 2026-07-30
 1. **`MEDIDOR_BASE_URL`** apuntaba a `http://medidor-api:8000` (contenedor inexistente — el real es `medidor_api` — y en otra red Docker) → `https://medidor.inovaweb.com.mx`.
