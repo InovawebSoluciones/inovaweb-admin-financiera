@@ -419,13 +419,30 @@ async def api_client_charge(
                                   balance_cents=bal, idempotent_replay=True)
 
     svc = (await db.execute(
-        text("SELECT unit_price_cents FROM services "
+        text("SELECT unit_price_cents, unit FROM services "
              "WHERE code=:c AND is_active AND organization_id=:org"),
         {"c": body.service_code, "org": org},
     )).first()
     if not svc:
         raise HTTPException(404, f"servicio {body.service_code} no existe")
-    amount = int(svc[0]) * body.units
+    if (svc[1] or "") == "token":
+        # Consumo de IA: la unidad es el TOKEN y su precio vive en micros en
+        # price_catalog (fuente unica de verdad). Se tarifica a precision de
+        # micros y se redondea UNA sola vez -> nada de paquetes artificiales ni
+        # precios duplicados en services.unit_price_cents. Si cambia el costo o
+        # el modelo, solo se actualiza price_catalog.
+        from app.services.pricing import PricingError, price_quantity
+        try:
+            _pr = await price_quantity(db, meter="ia", unit_code="token",
+                                       quantity=int(body.units))
+            amount = int(_pr.amount_cents)
+        except PricingError as _e:
+            raise HTTPException(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail={"error": "sin_precio_ia", "detalle": str(_e)[:160]},
+            )
+    else:
+        amount = int(svc[0]) * body.units
 
     bal = int((await db.execute(
         text("SELECT balance_cents FROM v_client_balance WHERE client_id=:c"),

@@ -119,25 +119,28 @@
 | Clasificar respuesta WhatsApp | `routers/whatsapp_inbox.py` | **0** |
 | Clasificar mercado de artículo | `workers/tasks.py:904` | **0** (absorbido en el envío) |
 
-### ✅ COBRO POR CONSUMO implementado 2026-07-30 (`analisis_ia`, `agente_corrida`)
-Antes: precio PLANO de 10 cr sin importar el tamaño. Ahora: **1 unidad = 1,000 tokens** (entrada+salida), redondeo hacia arriba, mínimo 1.
+### ✅ COBRO POR TOKEN (micros) implementado 2026-07-30 — `analisis_ia`, `agente_corrida`
 
-**⚠️ LA RELACIÓN TOKENS→CRÉDITO YA ESTABA ESTABLECIDA — no inventar precios.** Vive en `price_catalog` (BD del CAF):
+**La unidad de cobro es el TOKEN, con su valor en MICROS.** No hay múltiplos, paquetes ni precios duplicados en código: si mañana cambia el costo del proveedor o el modelo, **basta un `UPDATE` en `price_catalog`**.
 
+**Fuente única de verdad — `price_catalog` (BD del CAF):**
 | meter | unit_code | public_price_micros | cost_price_micros |
 |---|---|---|---|
 | `ia` | `token` | **60** | 30 |
 
-60 micros de peso por token ⇒ **1 crédito = 166.67 tokens** ⇒ **6 créditos por cada 1,000 tokens** (margen 2x sobre el costo). Por eso `services.unit_price_cents = 6` para ambos servicios.
+1 centavo = 10,000 micros ⇒ 1 token = 60 micros ⇒ **1 crédito ≈ 166.67 tokens** (margen 2x sobre costo).
 
-| service_code | unit | precio | Fuente de los tokens |
-|---|---|---|---|
-| `analisis_ia` | `1000_tokens` | 6 cr | `resp.usage` → `analizar_campana()` devuelve `tokens` → `routers/campanas.py` hace `ceil(tokens/1000)` |
-| `agente_corrida` | `1000_tokens` | 6 cr | `DeepSeekPlanner.ultimo_uso_tokens` → `routers/agente.py` hace `ceil(tokens/1000)`. Las herramientas del plan siguen cobrando su propio servicio. |
+**Cómo funciona:**
+1. LiaForge captura los tokens reales de `resp.usage` (entrada+salida) y llama `cobrar(service_code, units=<tokens EXACTOS>)`.
+   - `analisis_ia`: `analizar_campana()` devuelve `tokens` → `routers/campanas.py`
+   - `agente_corrida`: `DeepSeekPlanner.ultimo_uso_tokens` → `routers/agente.py`
+2. El CAF (`POST /api/v2/clients/{id}/charge`) detecta `services.unit='token'` y tarifica con **`pricing.price_quantity(meter='ia', unit_code='token', quantity=tokens)`** → multiplica en micros y redondea **UNA sola vez** a centavos (HALF_UP). `services.unit_price_cents` queda en 0: no se usa para estos servicios.
 
-**Verificado:** un análisis real consumió **3,395 tokens** → 4 unidades → **24 cr** ($0.24). Antes: 10 cr fijos.
+**Verificado end-to-end:** 3,395 tokens × 60 micros = 203,700 micros = 20.37 ¢ → **`charged_cents=20`**. (Antes cobraba 10 fijos.) Cobros de prueba revertidos (`reverso-prueba-tokens-20260730`, `reverso-prueba-micros-20260730`).
 
-**Arquitectura de precios (documentada en `caf/services/billing.py:233`):** *"el Medidor mide la CANTIDAD (tokens); el CAF aplica el PRECIO PÚBLICO (`price_catalog`). El costo crudo del Medidor NO se factura — es solo para margen/COGS."* Es decir: `llm_pricing`/`service_catalog` del Medidor = **COSTO** (COGS, ~$30.45/M entrada en v4-pro); `price_catalog` del CAF = **PRECIO DE VENTA**.
+**Separación de precios (ver `caf/services/billing.py:233`):** *"el Medidor mide la CANTIDAD (tokens); el CAF aplica el PRECIO PÚBLICO (`price_catalog`). El costo crudo del Medidor NO se factura — es solo para margen/COGS."*
+- `llm_pricing` / `service_catalog` (Medidor) = **COSTO/COGS** (v4-pro: $30.45/M entrada, $60.90/M salida).
+- `price_catalog` (CAF) = **PRECIO DE VENTA**.
 
 ### ✅ Corregido 2026-07-30
 1. **`MEDIDOR_BASE_URL`** apuntaba a `http://medidor-api:8000` (contenedor inexistente — el real es `medidor_api` — y en otra red Docker) → `https://medidor.inovaweb.com.mx`.
