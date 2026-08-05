@@ -425,21 +425,28 @@ async def api_client_charge(
     )).first()
     if not svc:
         raise HTTPException(404, f"servicio {body.service_code} no existe")
-    if (svc[1] or "") == "token":
+    _unit = (svc[1] or "").strip()
+    if _unit.startswith("token"):
         # Consumo de IA: la unidad es el TOKEN y su precio vive en micros en
         # price_catalog (fuente unica de verdad). Se tarifica a precision de
         # micros y se redondea UNA sola vez -> nada de paquetes artificiales ni
         # precios duplicados en services.unit_price_cents. Si cambia el costo o
         # el modelo, solo se actualiza price_catalog.
+        #
+        # La unidad del servicio ES el unit_code que se busca en el catalogo:
+        # 'token' (redaccion con DeepSeek) y 'token_busqueda' (Perplexity Agent)
+        # cuestan distinto por token, asi que cada uno lleva SU precio publico.
+        # Un servicio con unidad desconocida no se cobra a ciegas: 503.
         from app.services.pricing import PricingError, price_quantity
         try:
-            _pr = await price_quantity(db, meter="ia", unit_code="token",
+            _pr = await price_quantity(db, meter="ia", unit_code=_unit,
                                        quantity=int(body.units))
             amount = int(_pr.amount_cents)
         except PricingError as _e:
             raise HTTPException(
                 status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail={"error": "sin_precio_ia", "detalle": str(_e)[:160]},
+                detail={"error": "sin_precio_ia", "unidad": _unit,
+                        "detalle": str(_e)[:160]},
             )
     else:
         amount = int(svc[0]) * body.units
@@ -448,6 +455,13 @@ async def api_client_charge(
         text("SELECT balance_cents FROM v_client_balance WHERE client_id=:c"),
         {"c": client_id},
     )).scalar() or 0)
+    if amount <= 0:
+        # Nada que cobrar: servicio gratuito por catalogo (p.ej. `scraping` con
+        # unit_price_cents=0) o consumo de IA que redondea a menos de 1 centavo.
+        # El ledger tiene CHECK (amount_cents > 0), asi que NO se inserta: se
+        # responde OK con charged_cents=0 en vez de reventar con un 500.
+        return ChargeResponse(ok=True, client_id=client_id, service_code=body.service_code,
+                              units=body.units, charged_cents=0, balance_cents=bal)
     if bal < amount:
         raise HTTPException(
             status.HTTP_402_PAYMENT_REQUIRED,
