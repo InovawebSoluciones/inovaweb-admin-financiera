@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, EmailStr
@@ -334,30 +335,94 @@ async def api_client_recharge(
     return {"checkout_url": url, "amount_cents": amount_cents}
 
 
+_MX_TZ = ZoneInfo("America/Mexico_City")
+
+
 @router.get("/clients/{client_id}/ledger")
 async def api_client_ledger(
     client_id: int, request: Request, db: AsyncSession = Depends(get_db),
-    limit: int = 50,
+    limit: int = 200,
+    from_ts: str | None = Query(None),
+    to_ts: str | None = Query(None),
 ) -> dict:
-    """Movimientos del libro prepago + consumo del mes en curso (app-facing)."""
+    """Movimientos del libro prepago + consumo del periodo (app-facing).
+
+    Periodo por defecto: del dia 1 del mes en curso al ULTIMO movimiento real
+    de la cuenta -- no "ahora mismo". Si la cuenta no tuvo actividad hoy pero
+    si ayer, el estado de cuenta debe seguir mostrando ayer como el cierre del
+    periodo, no verse cortado/vacio solo porque hoy no paso nada.
+
+    Todo se calcula en hora de MEXICO, no UTC: Mexico es UTC-6/-5, calcular el
+    "mes" en UTC corre actividad de la noche de un dia (o de fin de mes) al
+    dia/mes siguiente y descuadra los totales que ve el cliente.
+
+    `movimientos` sigue trayendo el detalle crudo (para auditoria); lo nuevo
+    es `resumen_por_concepto`, que es lo que debe verse en pantalla: sumado
+    por servicio (email, scraping, etc.), no una fila por transaccion.
+    """
     org = await resolve_app_org(request, db)
     await assert_client_in_org(db, client_id, org)
-    limit = max(1, min(int(limit), 200))
+    limit = max(1, min(int(limit), 500))
+
+    if to_ts:
+        to_dt = datetime.fromisoformat(to_ts)
+    else:
+        ultimo = (await db.execute(
+            text("SELECT max(created_at) FROM prepaid_ledger WHERE client_id=:c"),
+            {"c": client_id},
+        )).scalar()
+        to_dt = ultimo or datetime.now(timezone.utc)
+    if to_dt.tzinfo is None:
+        to_dt = to_dt.replace(tzinfo=timezone.utc)
+
+    if from_ts:
+        from_dt = datetime.fromisoformat(from_ts)
+        if from_dt.tzinfo is None:
+            from_dt = from_dt.replace(tzinfo=timezone.utc)
+    else:
+        to_local = to_dt.astimezone(_MX_TZ)
+        from_dt = to_local.replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        ).astimezone(timezone.utc)
+
     rows = (await db.execute(
         text("SELECT created_at, kind, service_code, units, amount_cents, source "
              "FROM prepaid_ledger WHERE client_id=:c "
+             "AND created_at >= :pfrom AND created_at <= :pto "
              "ORDER BY created_at DESC LIMIT :l"),
-        {"c": client_id, "l": limit},
+        {"c": client_id, "pfrom": from_dt, "pto": to_dt, "l": limit},
     )).all()
-    consumo_mes = int((await db.execute(
+
+    consumo = int((await db.execute(
         text("SELECT coalesce(sum(amount_cents),0) FROM prepaid_ledger "
              "WHERE client_id=:c AND kind='debit' "
-             "AND created_at >= date_trunc('month', now())"),
-        {"c": client_id},
+             "AND created_at >= :pfrom AND created_at <= :pto"),
+        {"c": client_id, "pfrom": from_dt, "pto": to_dt},
     )).scalar() or 0)
+
+    resumen_rows = (await db.execute(
+        text("SELECT service_code, kind, sum(coalesce(units,0)) AS units, "
+             "sum(amount_cents) AS amount_cents, count(*) AS veces "
+             "FROM prepaid_ledger WHERE client_id=:c "
+             "AND created_at >= :pfrom AND created_at <= :pto "
+             "GROUP BY service_code, kind ORDER BY amount_cents DESC"),
+        {"c": client_id, "pfrom": from_dt, "pto": to_dt},
+    )).all()
+
     return {
         "client_id": client_id,
-        "consumo_mes_cents": consumo_mes,
+        "period_from": from_dt.isoformat(),
+        "period_to": to_dt.isoformat(),
+        "consumo_mes_cents": consumo,
+        "consumo_periodo_cents": consumo,
+        "resumen_por_concepto": [
+            {
+                "service_code": r[0], "kind": r[1],
+                "units": int(r[2]) if r[2] is not None else None,
+                "amount_cents": int(r[3]), "veces": int(r[4]),
+            }
+            for r in resumen_rows
+        ],
         "movimientos": [
             {
                 "fecha": r[0].isoformat(),
