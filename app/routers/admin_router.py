@@ -1007,6 +1007,18 @@ async def _assert_distributor_in_org(
         raise HTTPException(404, "distribuidor no encontrado")
 
 
+def _csv_seguro(valor: str | None) -> str:
+    """Neutraliza fórmulas antes de escribir texto en un CSV.
+
+    `clients.trade_name` lo elige el propio cliente en el alta self-service
+    (`POST /api/v2/apps/onboard`), así que llega texto no confiable. Excel evalúa
+    como fórmula toda celda que empiece con = + - @ o con tab/CR; anteponer una
+    comilla simple la fuerza a mostrarse como texto.
+    """
+    v = (valor or "").strip()
+    return "'" + v if v[:1] in ("=", "+", "-", "@", "\t", "\r") else v
+
+
 async def _code_libre(db: AsyncSession, code: str, *, salvo_dist: int | None = None,
                       salvo_code: int | None = None) -> bool:
     """True si `code` no está tomado en distributors NI en distributor_codes.
@@ -1203,7 +1215,8 @@ async def export_pending_commissions(
     w.writerow(["distribuidor", "codigo", "cliente", "primera_recarga_mxn",
                 "comision_pct", "comision_mxn", "fecha"])
     for r in rows:
-        w.writerow([r["distribuidor"], r["referral_code"] or "", r["cliente"],
+        w.writerow([_csv_seguro(r["distribuidor"]), _csv_seguro(r["referral_code"]),
+                    _csv_seguro(r["cliente"]),
                     f"{r['base_cents'] / 100:.2f}", f"{float(r['commission_pct']):.2f}",
                     f"{r['commission_cents'] / 100:.2f}",
                     r["created_at"].strftime("%Y-%m-%d") if r["created_at"] else ""])
@@ -1243,6 +1256,15 @@ async def distributor_detail(
         ORDER BY dc.created_at DESC
         LIMIT 200
     """), {"did": dist_id})).mappings().all()
+    # Totales sobre TODAS las comisiones, no sobre las 200 que se listan: el botón
+    # de liquidar paga todas las pendientes, así que el monto que confirma el
+    # operador tiene que ser el mismo que se va a marcar como pagado.
+    totales = (await db.execute(text("""
+        SELECT COALESCE(SUM(commission_cents) FILTER (WHERE status='pending'), 0) AS pending_cents,
+               COUNT(*) FILTER (WHERE status='pending') AS pending_count,
+               COALESCE(SUM(commission_cents) FILTER (WHERE status='paid'), 0) AS paid_cents
+        FROM distributor_commissions WHERE distributor_id = :did
+    """), {"did": dist_id})).mappings().one()
     codigos = (await db.execute(text("""
         SELECT id, label, code, is_active, created_at
         FROM distributor_codes
@@ -1262,6 +1284,7 @@ async def distributor_detail(
         request, "admin/distributor_detail.html",
         {"user": user, "dist": dict(dist), "comisiones": list(comisiones),
          "codigos": list(codigos), "referidos": list(referidos),
+         "tot": dict(totales),
          "saved": request.query_params.get("saved")},
     )
 

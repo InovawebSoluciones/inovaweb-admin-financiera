@@ -7,6 +7,32 @@ Orden cronológico inverso: lo más reciente primero.
 
 ---
 
+## [0.12.0] — 2026-08-27 — Operación completa del módulo de distribuidores (ADR-033)
+
+### Agregado
+- **Editar distribuidor** (nombre, código de referido, % de comisión, referencia externa) y **activar/desactivar**. Un distribuidor inactivo deja de captar clientes nuevos pero conserva sus comisiones devengadas.
+- **Editar y activar/desactivar códigos de vendedor.**
+- **Lista de clientes referidos** en el detalle (nombre, correo, estado, fecha de alta) — antes solo se veía el número.
+- **Liquidación masiva** de comisiones: `POST /distributors/{id}/commissions/pay-all`, una sola referencia de transferencia para todas las pendientes.
+- **Tarjeta de comisiones por pagar** en `/admin/dashboard`, enlazada al módulo.
+- **Buscador** por nombre, código principal o código/nombre de vendedor, con paginación.
+- **Export CSV** de comisiones pendientes (BOM UTF-8; fórmulas neutralizadas).
+- **`external_ref`** (existía en la tabla desde siempre, sin uso) ahora se captura y edita.
+- **Migración `041_distributors_auditoria.sql`**: triggers de auditoría en `distributors`, `distributor_commissions` y `distributor_codes` — la convención de CLAUDE.md §4 los exige y ninguna de las tres los tenía. Añade `updated_at` a `distributor_codes`.
+
+### Corregido
+- **`mark_commission_paid` no validaba `organization_id`** — mismo hueco IDOR cross-tenant que se corrigió en `toggle_distributor_code` (v0.11.0). Unificado en `_assert_distributor_in_org()`, que ahora usan todas las mutaciones del módulo.
+- **El total del botón "Liquidar las N pendientes" se calculaba sobre las 200 comisiones listadas**, mientras el endpoint liquida todas las pendientes: con más de 200 comisiones, el operador confirmaba un monto menor al que realmente se marcaba como pagado. Los totales pasan a una consulta agregada aparte.
+- **Inyección de fórmulas en el CSV**: `clients.trade_name` viene del alta self-service (input externo) y se escribía sin neutralizar; Excel lo evaluaba como fórmula. Se antepone `'` a los valores que empiezan con `= + - @`.
+- **Término de búsqueda sin codificar** en los enlaces de paginación: buscar `A&B` y pasar de página truncaba el filtro a `A`.
+
+### UX
+- Estado como badge en vez de texto "sí/no"; filas inactivas atenuadas.
+- Confirmación al dar de alta con comisión mayor a 30%.
+- Aviso al pie de la tabla cuando hay más de 200 comisiones, aclarando que los totales sí las abarcan todas.
+
+---
+
 ## [0.11.0] — 2026-08-27 — Códigos de vendedor por distribuidor + CRUD catálogo servicios/productos
 
 ### Agregado

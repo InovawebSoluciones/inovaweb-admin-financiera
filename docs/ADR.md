@@ -1279,3 +1279,29 @@ Los distribuidores (ADR-031) piden que su propia gente de ventas pueda repartir 
 - Un código de vendedor desactivado no resuelve a nada — el cliente queda sin `referral_distributor_id`, igual que si nunca hubiera mandado un código.
 - Validado dos veces contra Postgres desechable antes de tocar producción: esquema sintético mínimo y volcado `--schema-only` real de prod. Ambas corridas confirmaron: código principal → distribuidor correcto, código de vendedor → mismo distribuidor, código inactivo → no resuelve.
 - **Hallazgo de seguridad post-despliegue, ya corregido**: `toggle_distributor_code` salió a producción sin verificar `organization_id` — un usuario `_WRITE` de otra organización tenant podía activar/desactivar el código de un distribuidor ajeno adivinando IDs (mismo patrón de bug que el fix crítico 6faaeb5 de este módulo). Estuvo expuesto en prod desde el primer despliegue de este módulo hasta que el `code-review` posterior lo detectó; corregido y redesplegado el mismo día. Sin evidencia de explotación (no hay más de un usuario `_WRITE` activo hoy fuera de plataforma), pero la ventana existió.
+
+## ADR-033: Operación completa del módulo de distribuidores
+
+**Fecha:** 2026-08-27
+**Estado:** Aprobado
+
+### Contexto
+Tras cerrar ADR-032, el módulo permitía dar de alta distribuidores y códigos de vendedor, pero no operarlos: no se podía corregir un dato mal tipeado, ni dar de baja a un distribuidor, ni saber qué clientes había traído, ni pagar más de una comisión a la vez. Todo eso obligaba a bajar a SQL manual, en contra del objetivo declarado del CAF ("operación 100% sin SQL manual", CLAUDE.md §1). Además, ninguna de las tres tablas del módulo tenía trigger de auditoría, incumpliendo la convención firme de CLAUDE.md §4.
+
+### Decisión
+- **Edición y baja lógica** de distribuidores y de códigos de vendedor. Un distribuidor inactivo deja de resolver en el onboarding (él y sus vendedores) pero **conserva sus comisiones devengadas**, que siguen listadas y se pueden pagar: dar de baja a un socio no es motivo para no pagarle lo ya generado.
+- **Cambiar el `commission_pct` NO reescribe comisiones ya devengadas.** Cada fila de `distributor_commissions` guarda su propio `commission_pct` (append-only); el valor nuevo aplica solo de ahí en adelante. Lo contrario permitiría alterar retroactivamente lo que se le debe a un distribuidor.
+- **Liquidación masiva** (`POST /distributors/{id}/commissions/pay-all`): una transferencia real paga muchas comisiones, así que la UI refleja eso con una sola referencia bancaria para todas.
+- **Los totales de comisión se calculan en una consulta agregada aparte**, no sumando las filas mostradas: la tabla está acotada a 200 filas y el botón de liquidar paga *todas* las pendientes. Si el total mostrado saliera de las filas listadas, el operador confirmaría un monto menor al que realmente se marca como pagado.
+- **Migración 041**: triggers `trg_audit_row` sobre `distributors`, `distributor_commissions` y `distributor_codes`, más `updated_at` en esta última.
+- **`_assert_distributor_in_org()`**: un solo helper para el aislamiento multi-tenant, usado por *todas* las mutaciones del módulo. Reemplaza el chequeo copiado a mano, que es como se coló el hueco de ADR-032.
+- **CSV de pendientes** con neutralización de fórmulas (`_csv_seguro`): `clients.trade_name` lo elige el propio cliente en el alta self-service, así que es texto no confiable que termina en una hoja de cálculo del operador.
+
+### Alternativas consideradas
+- **Borrado físico de distribuidores**: descartado. Hay comisiones y clientes que los referencian por FK, y el historial financiero es append-only por convención del proyecto.
+- **Paginar la tabla de comisiones en vez de acotarla a 200**: no aporta hoy (ningún distribuidor se acerca a ese volumen) y el aviso al pie deja claro que la lista está recortada mientras los totales no lo están.
+
+### Consecuencias
+- La auditoría del módulo pasa a existir: quién cambió un porcentaje, quién desactivó un código y quién liquidó qué queda en `audit_log` con actor, IP y el antes/después.
+- `mark_commission_paid` tenía el mismo hueco de aislamiento que ADR-032 documentó para el toggle; al unificar en el helper quedó cerrado también.
+- Queda como deuda conocida el TOCTOU entre `_code_libre` y el INSERT/UPDATE (dos altas simultáneas del mismo código): sigue siendo aceptable por volumen, sin impacto en dinero.

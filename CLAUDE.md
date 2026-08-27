@@ -314,7 +314,27 @@ pospuesta hasta demanda real.
 
 ## 12. ESTADO ACTUAL Y PENDIENTES (actualizar al cerrar cada sesion)
 
-**Sesion al: 2026-08-27. Foco: códigos de vendedor por distribuidor (mig 040) + fix IDOR + docs formales + sync de CRUD desplegado en vivo.**
+**Sesion al: 2026-08-27. Foco: módulo de distribuidores — códigos de vendedor (mig 040) + operación completa (mig 041) + 4 fixes de seguridad/dinero + docs formales.**
+
+### ✅ Sesion 2026-08-27 (2) — Operación completa del módulo de distribuidores (ADR-033, commit 77616da + cierre)
+Se cerraron los 12 huecos que hacían inoperable el módulo sin bajar a SQL:
+- **Editar y desactivar** distribuidores y códigos de vendedor. Inactivo = deja de captar clientes, pero **conserva y permite pagar** sus comisiones devengadas.
+- **Cambiar el % NO reescribe comisiones ya devengadas** (cada fila guarda su propio `commission_pct`).
+- **Liquidación masiva** de comisiones con una sola referencia de transferencia.
+- **Lista de clientes referidos** (antes solo el número), buscador (nombre/código/vendedor) + paginación, export CSV, tarjeta de comisiones pendientes en el dashboard, `external_ref` en uso, badges de estado.
+- **Migración 041:** triggers de auditoría en las 3 tablas del módulo (**ninguna los tenía**, incumpliendo CLAUDE.md §4) + `updated_at` en `distributor_codes`.
+
+**🔴 4 hallazgos de seguridad/dinero, todos corregidos y desplegados:**
+1. `toggle_distributor_code` sin chequeo de `organization_id` (IDOR cross-tenant).
+2. `mark_commission_paid` con el **mismo** hueco. **Tercera aparición del patrón** (la 1ª fue `6faaeb5`). Causa raíz: el chequeo se copiaba a mano en cada endpoint → resuelto con `_assert_distributor_in_org()`, que ahora usan **todas** las mutaciones del módulo.
+3. **Liquidación masiva confirmaba un monto menor al que liquidaba** (total sumado sobre las 200 filas listadas, pero el endpoint paga todas las pendientes).
+4. **Inyección de fórmulas en el CSV** vía `clients.trade_name`, que viene del alta self-service (input externo).
+
+**Refutado en la revisión (no se cambió nada):** se sospechó que el `except` sin `rollback()` rompería los mensajes de error; probado contra Postgres real, SQLAlchemy lo maneja y el `commit()` de `get_db` no falla.
+
+**🔴 DEUDA ABIERTA:** auditar el CRUD de servicios/productos que se desplegó directo en el VPS sin pasar por git (detectado en la sesión anterior). Sigue sin revisar.
+
+**Lección de proceso:** el `code-review` se corrió DESPUÉS del primer deploy y por eso el IDOR llegó a producción. En este proyecto va **antes** de desplegar.
 
 ### ✅ Sesion 2026-08-27 — Códigos de vendedor por distribuidor (ADR-032, commit 1c85d35)
 - **Migración 040:** tabla `distributor_codes` — códigos hijos de un distribuidor (uno por vendedor), sin tabla de comisión propia. La comisión sigue siendo 100% por `distributors.commission_pct`; explícitamente NO se calcula por vendedor (pedido así por Conrado).

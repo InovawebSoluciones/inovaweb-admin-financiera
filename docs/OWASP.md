@@ -466,3 +466,48 @@ Ninguna (el único ❌ encontrado ya fue corregido en este mismo commit).
 6. TOCTOU en el chequeo cruzado de unicidad de `distributor_codes` vs `distributors.referral_code` — aceptado por bajo riesgo/volumen.
 
 *Addendum OWASP — auditoría 2026-08-27 (códigos de vendedor, ADR-032). Commit 1c85d35.*
+
+---
+
+## Addendum 2026-08-27 (2) — Operación completa del módulo de distribuidores (ADR-033)
+
+**Commit auditado:** cierre de sesión 2026-08-27 (sobre `77616da`)
+**Resultado:** **PASS POST-FIX** — 3 hallazgos, los 3 corregidos y desplegados antes del cierre.
+
+### Resumen
+
+| Categoría | Estado | Hallazgos |
+|---|---|---|
+| SQL Injection | ✅ PASS | Todas las queries nuevas usan `text()` con bind params; el filtro del buscador interpola solo el fragmento literal, el término va en `:q` |
+| XSS | ✅ PASS | Jinja2 autoescape en las secciones nuevas; sin `\|safe` |
+| Inyección de fórmulas (CSV) | 🔴→✅ CORREGIDO | El export escribía `trade_name` (input externo) sin neutralizar |
+| CSRF | ⚠️ REVISAR | Deuda heredada, sin cambio |
+| Control de acceso / IDOR | 🔴→✅ CORREGIDO | `mark_commission_paid` no validaba organización — mismo hueco que el toggle en v0.11.0 |
+| Dinero / integridad | 🔴→✅ CORREGIDO | El monto confirmado en la liquidación masiva podía ser menor al realmente liquidado |
+| Auditoría | ✅ NUEVO | Migración 041 pone triggers en las 3 tablas del módulo (antes: ninguna) |
+
+### Detalle
+
+#### 🔴→✅ Liquidación masiva: el monto confirmado no era el liquidado
+La tabla de comisiones se consulta con `LIMIT 200` y el total del botón se sumaba sobre esas filas, pero `pay_all_commissions` liquida **todas** las pendientes. Con más de 200 comisiones, el operador confirmaba un importe menor al que quedaba marcado como pagado — comisiones dadas por transferidas sin haberse transferido, y todas con la misma referencia bancaria. Corregido: los totales salen de una consulta agregada sobre la tabla completa, y la vista avisa cuando la lista está recortada.
+
+#### 🔴→✅ Inyección de fórmulas en el CSV de comisiones
+`clients.trade_name` lo elige el propio cliente al registrarse por `POST /api/v2/apps/onboard` (self-service de LiaForge/Swigg, sin revisión de Inovaweb). Ese texto llegaba literal al CSV que descarga el equipo financiero; una celda que empieza con `=`, `+`, `-` o `@` es evaluada como fórmula por Excel. Corregido con `_csv_seguro()`, que antepone `'` a esos valores. Verificado con 9 casos.
+
+#### 🔴→✅ IDOR en `mark_commission_paid`
+Marcaba una comisión como pagada sin verificar que el distribuidor perteneciera a la organización del usuario — el mismo patrón que ya se había corregido en `toggle_distributor_code` y antes en `6faaeb5`. **Es la tercera aparición del mismo hueco en este módulo.** Corregido de raíz: `_assert_distributor_in_org()` centraliza el chequeo y lo usan todas las mutaciones (`edit`, `toggle`, `codes`, `codes/edit`, `codes/toggle`, `commissions/pay`, `commissions/pay-all`). Copiar el chequeo a mano en cada endpoint fue la causa de las tres.
+
+#### ✅ Auditoría — hueco de convención cerrado
+Hasta hoy ninguna tabla del módulo tenía trigger de auditoría, pese a que CLAUDE.md §4 la declara obligatoria para toda escritura. La migración 041 la habilita en las tres. Verificado en producción: un cambio de `commission_pct` queda registrado con actor, IP y el antes/después.
+
+#### ✅ Refutado en la revisión
+Se sospechó que el `except Exception` sin `rollback()` rompería el redirect de error (500 en vez del mensaje amistoso). **Probado contra Postgres real: no ocurre** — SQLAlchemy deja la sesión en estado válido y el `commit()` de `get_db` no falla. No se cambió nada por esto.
+
+### Acciones requeridas antes del siguiente push
+Ninguna (los 3 hallazgos ya están corregidos, desplegados y verificados en vivo).
+
+### Deuda técnica acumulada — actualización
+7. TOCTOU entre `_code_libre` y el INSERT/UPDATE de código — aceptado por volumen, sin impacto en dinero.
+8. **Auditar el CRUD de servicios/productos** que se desplegó directo en el VPS sin pasar por git (detectado en v0.11.0) — sigue pendiente, no se revisó en esta sesión.
+
+*Addendum OWASP — cierre de sesión 2026-08-27 (ADR-033).*
