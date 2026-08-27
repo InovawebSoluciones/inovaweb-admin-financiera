@@ -638,7 +638,10 @@ async def api_app_onboard(
             {"c": r.client_id, "org": org, "a": total, "k": grant_key,
              "m": _json.dumps(meta)},
         )
-    # Vincular al distribuidor referidor si se proporcionó código de referido
+    # Vincular al distribuidor referidor si se proporcionó código de referido.
+    # El código puede ser el del distribuidor mismo (distributors.referral_code)
+    # o el de uno de sus vendedores (distributor_codes.code, mig. 040) — ambos
+    # resuelven al mismo distributor_id; la comisión no distingue entre ellos.
     if body.referral_code:
         ref_code = body.referral_code.strip().upper()
         dist_id = (await db.execute(text("""
@@ -647,6 +650,14 @@ async def api_app_onboard(
               AND organization_id IN (:org, 1)
             LIMIT 1
         """), {"c": ref_code, "org": org})).scalar()
+        if dist_id is None:
+            dist_id = (await db.execute(text("""
+                SELECT dc.distributor_id FROM distributor_codes dc
+                JOIN distributors d ON d.id = dc.distributor_id
+                WHERE UPPER(dc.code) = :c AND dc.is_active AND d.is_active
+                  AND dc.organization_id IN (:org, 1)
+                LIMIT 1
+            """), {"c": ref_code, "org": org})).scalar()
         if dist_id:
             await db.execute(
                 text("UPDATE clients SET referral_distributor_id = :d WHERE id = :c"),

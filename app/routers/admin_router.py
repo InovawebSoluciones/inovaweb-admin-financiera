@@ -388,6 +388,7 @@ async def cancel_client(
 @router.get("/catalog/products", response_class=HTMLResponse)
 async def list_products(
     request: Request,
+    saved: str = Query(""),
     user: CurrentUser = Depends(_OPS),
     db: AsyncSession = Depends(get_db),
 ) -> HTMLResponse:
@@ -396,7 +397,7 @@ async def list_products(
         f"SELECT * FROM products WHERE TRUE{oc} ORDER BY name"
     ), op)).mappings().all()
     return templates.TemplateResponse(
-        request, "admin/products.html", {"user": user, "rows": list(rows)},
+        request, "admin/products.html", {"user": user, "rows": list(rows), "saved": saved},
     )
 
 
@@ -407,9 +408,13 @@ async def list_services(
     user: CurrentUser = Depends(_OPS),
     db: AsyncSession = Depends(get_db),
 ) -> HTMLResponse:
-    oc, op = _org_scope(user)
+    oc, op = _org_scope(user, "s.organization_id")
+    # Trae la tarifa por token de price_catalog (micros) por si el servicio cobra por token.
     rows = (await db.execute(text(
-        f"SELECT * FROM services WHERE TRUE{oc} ORDER BY name"
+        f"SELECT s.*, pc.public_price_micros AS token_micros "
+        f"FROM services s "
+        f"LEFT JOIN price_catalog pc ON pc.unit_code = s.unit AND pc.meter = 'ia' AND pc.is_active "
+        f"WHERE TRUE{oc} ORDER BY s.name"
     ), op)).mappings().all()
     return templates.TemplateResponse(
         request, "admin/services.html", {"user": user, "rows": list(rows), "saved": saved},
@@ -1020,6 +1025,14 @@ async def create_distributor_new(
     await bind_actor(db, actor_user_id=user.id,
                      actor_ip=request.client.host if request.client else None,
                      request_id=getattr(request.state, "request_id", None))
+    # el código principal tampoco debe repetir un código de vendedor existente
+    # (uq_distributors_referral_code solo protege dentro de distributors)
+    clash = (await db.execute(
+        text("SELECT 1 FROM distributor_codes WHERE UPPER(code) = :c"),
+        {"c": rc},
+    )).scalar()
+    if clash:
+        return RedirectResponse("/admin/distributors?saved=error_dup", status_code=303)
     try:
         await db.execute(
             text("""INSERT INTO distributors (name, referral_code, commission_pct, organization_id)
@@ -1060,11 +1073,88 @@ async def distributor_detail(
         ORDER BY dc.created_at DESC
         LIMIT 200
     """), {"did": dist_id})).mappings().all()
+    codigos = (await db.execute(text("""
+        SELECT id, label, code, is_active, created_at
+        FROM distributor_codes
+        WHERE distributor_id = :did
+        ORDER BY created_at DESC
+    """), {"did": dist_id})).mappings().all()
     return templates.TemplateResponse(
         request, "admin/distributor_detail.html",
         {"user": user, "dist": dict(dist), "comisiones": list(comisiones),
+         "codigos": list(codigos),
          "saved": request.query_params.get("saved")},
     )
+
+
+@router.post("/distributors/{dist_id}/codes", response_class=RedirectResponse)
+async def create_distributor_code(
+    request: Request,
+    dist_id: int,
+    user: CurrentUser = Depends(_WRITE),
+    db: AsyncSession = Depends(get_db),
+    label: str = Form(...),
+    code: str = Form(...),
+) -> RedirectResponse:
+    lb = label.strip()
+    cd = code.strip().upper()
+    if not lb or not cd:
+        return RedirectResponse(f"/admin/distributors/{dist_id}?saved=error_campos", status_code=303)
+    oc, op = _org_scope(user, "organization_id")
+    owns = (await db.execute(
+        text(f"SELECT 1 FROM distributors WHERE id=:did{oc}"),
+        {"did": dist_id, **op},
+    )).scalar()
+    if not owns:
+        raise HTTPException(404, "distribuidor no encontrado")
+    await bind_actor(db, actor_user_id=user.id,
+                     actor_ip=request.client.host if request.client else None,
+                     request_id=getattr(request.state, "request_id", None))
+    # el código no debe repetir el código principal de NINGÚN distribuidor
+    clash = (await db.execute(
+        text("SELECT 1 FROM distributors WHERE UPPER(referral_code) = :c"),
+        {"c": cd},
+    )).scalar()
+    if clash:
+        return RedirectResponse(f"/admin/distributors/{dist_id}?saved=error_dup", status_code=303)
+    try:
+        await db.execute(
+            text("""INSERT INTO distributor_codes (distributor_id, label, code, organization_id)
+                    VALUES (:d, :lb, :cd, :org)"""),
+            {"d": dist_id, "lb": lb, "cd": cd, "org": user.organization_id},
+        )
+    except Exception:
+        return RedirectResponse(f"/admin/distributors/{dist_id}?saved=error_dup", status_code=303)
+    return RedirectResponse(f"/admin/distributors/{dist_id}?saved=code_ok", status_code=303)
+
+
+@router.post("/distributors/{dist_id}/codes/{code_id}/toggle", response_class=RedirectResponse)
+async def toggle_distributor_code(
+    request: Request,
+    dist_id: int,
+    code_id: int,
+    user: CurrentUser = Depends(_WRITE),
+    db: AsyncSession = Depends(get_db),
+) -> RedirectResponse:
+    # aislamiento multi-tenant: sin esto, cualquier usuario _WRITE de OTRA
+    # organización podía activar/desactivar el código de un distribuidor ajeno
+    # con solo adivinar dist_id/code_id (mismo patrón de bug que 6faaeb5).
+    oc, op = _org_scope(user, "organization_id")
+    owns = (await db.execute(
+        text(f"SELECT 1 FROM distributors WHERE id=:did{oc}"),
+        {"did": dist_id, **op},
+    )).scalar()
+    if not owns:
+        raise HTTPException(404, "distribuidor no encontrado")
+    await bind_actor(db, actor_user_id=user.id,
+                     actor_ip=request.client.host if request.client else None,
+                     request_id=getattr(request.state, "request_id", None))
+    result = await db.execute(text("""
+        UPDATE distributor_codes SET is_active = NOT is_active
+        WHERE id = :cid AND distributor_id = :did
+    """), {"cid": code_id, "did": dist_id})
+    saved = "toggle_ok" if result.rowcount else "error_estado"
+    return RedirectResponse(f"/admin/distributors/{dist_id}?saved={saved}", status_code=303)
 
 
 @router.post("/distributors/{dist_id}/commissions/{cid}/pay",
@@ -1087,3 +1177,208 @@ async def mark_commission_paid(
     """), {"cid": cid, "did": dist_id, "u": user.id, "n": notes.strip() or None})
     saved = "paid_ok" if result.rowcount else "error_estado"
     return RedirectResponse(f"/admin/distributors/{dist_id}?saved={saved}", status_code=303)
+
+
+# --- CRUD servicios / productos / precios desde el panel (UI) ---------------
+# Escrituras: bind_actor antes de cada UPDATE/INSERT para que el trigger de
+# auditoria del CAF registre al actor. Verificacion de rowcount (no "exito falso").
+
+
+async def _bind(db, request, user) -> None:
+    await bind_actor(
+        db, actor_user_id=user.id,
+        actor_ip=request.client.host if request.client else None,
+        request_id=getattr(request.state, "request_id", None),
+    )
+
+
+def _precio_a_cents(valor: str):
+    """MXN texto -> centavos int. None si invalido; ('cero',) si >0 pero redondea a 0."""
+    try:
+        v = float(valor)
+    except (ValueError, TypeError):
+        return None
+    if v != v or v in (float("inf"), float("-inf")):
+        return None
+    try:
+        cents = round(v * 100)
+    except (ValueError, OverflowError):
+        return None
+    if cents < 0 or cents > 100_000_000:   # tope de sanidad: $1,000,000.00
+        return None
+    if v > 0 and cents == 0:               # sub-centavo: services no lo puede guardar
+        return ("cero",)
+    return cents
+
+
+@router.post("/catalog/services/{sid}/edit", response_class=HTMLResponse)
+async def edit_service(
+    request: Request, sid: int,
+    user: CurrentUser = Depends(_WRITE), db: AsyncSession = Depends(get_db),
+    name: str = Form(...), unit: str = Form("unidad"),
+    unit_price_mxn: str = Form(...), app_slug: str = Form(""),
+) -> HTMLResponse:
+    if not name.strip():
+        return RedirectResponse("/admin/catalog/services?saved=error_nombre", status_code=303)
+    price_cents = _precio_a_cents(unit_price_mxn)
+    if price_cents is None:
+        return RedirectResponse("/admin/catalog/services?saved=error_precio", status_code=303)
+    if price_cents == ("cero",):
+        return RedirectResponse("/admin/catalog/services?saved=error_precio_cero", status_code=303)
+    oc, op = _org_scope(user)
+    await _bind(db, request, user)
+    try:
+        res = await db.execute(text(
+            f"UPDATE services SET name=:name, unit=:unit, unit_price_cents=:price, "
+            f"app_slug=:app, updated_at=now() WHERE id=:id{oc}"
+        ), {"id": sid, "name": name.strip(), "unit": unit.strip() or "unidad",
+            "price": price_cents, "app": app_slug.strip() or None, **op})
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        return RedirectResponse("/admin/catalog/services?saved=error_bd", status_code=303)
+    if res.rowcount == 0:
+        return RedirectResponse("/admin/catalog/services?saved=error_notfound", status_code=303)
+    return RedirectResponse("/admin/catalog/services?saved=edit_ok", status_code=303)
+
+
+@router.post("/catalog/services/{sid}/toggle", response_class=HTMLResponse)
+async def toggle_service(
+    request: Request, sid: int,
+    user: CurrentUser = Depends(_WRITE), db: AsyncSession = Depends(get_db),
+) -> HTMLResponse:
+    oc, op = _org_scope(user)
+    await _bind(db, request, user)
+    try:
+        res = await db.execute(text(
+            f"UPDATE services SET is_active = NOT is_active, updated_at=now() WHERE id=:id{oc}"
+        ), {"id": sid, **op})
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        return RedirectResponse("/admin/catalog/services?saved=error_bd", status_code=303)
+    if res.rowcount == 0:
+        return RedirectResponse("/admin/catalog/services?saved=error_notfound", status_code=303)
+    return RedirectResponse("/admin/catalog/services?saved=toggle_ok", status_code=303)
+
+
+@router.post("/catalog/products", response_class=HTMLResponse)
+async def create_product(
+    request: Request,
+    user: CurrentUser = Depends(_WRITE), db: AsyncSession = Depends(get_db),
+    code: str = Form(...), name: str = Form(...),
+    sat_key: str = Form(""), unit_sat_key: str = Form(""), description: str = Form(""),
+) -> HTMLResponse:
+    if not code.strip() or not name.strip():
+        return RedirectResponse("/admin/catalog/products?saved=error_nombre", status_code=303)
+    await _bind(db, request, user)
+    try:
+        await db.execute(text(
+            "INSERT INTO products (code, name, description, sat_key, unit_sat_key, organization_id) "
+            "VALUES (:code, :name, :desc, :sat, :unit, :org)"
+        ), {"code": code.strip().lower(), "name": name.strip(),
+            "desc": description.strip() or None, "sat": sat_key.strip() or None,
+            "unit": unit_sat_key.strip() or None, "org": user.organization_id})
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        return RedirectResponse("/admin/catalog/products?saved=error_dup", status_code=303)
+    return RedirectResponse("/admin/catalog/products?saved=ok", status_code=303)
+
+
+@router.post("/catalog/products/{pid}/edit", response_class=HTMLResponse)
+async def edit_product(
+    request: Request, pid: int,
+    user: CurrentUser = Depends(_WRITE), db: AsyncSession = Depends(get_db),
+    name: str = Form(...), sat_key: str = Form(""),
+    unit_sat_key: str = Form(""), description: str = Form(""),
+) -> HTMLResponse:
+    if not name.strip():
+        return RedirectResponse("/admin/catalog/products?saved=error_nombre", status_code=303)
+    oc, op = _org_scope(user)
+    await _bind(db, request, user)
+    try:
+        res = await db.execute(text(
+            f"UPDATE products SET name=:name, sat_key=:sat, unit_sat_key=:unit, "
+            f"description=:desc, updated_at=now() WHERE id=:id{oc}"
+        ), {"id": pid, "name": name.strip(), "sat": sat_key.strip() or None,
+            "unit": unit_sat_key.strip() or None, "desc": description.strip() or None, **op})
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        return RedirectResponse("/admin/catalog/products?saved=error_bd", status_code=303)
+    if res.rowcount == 0:
+        return RedirectResponse("/admin/catalog/products?saved=error_notfound", status_code=303)
+    return RedirectResponse("/admin/catalog/products?saved=edit_ok", status_code=303)
+
+
+@router.post("/catalog/products/{pid}/toggle", response_class=HTMLResponse)
+async def toggle_product(
+    request: Request, pid: int,
+    user: CurrentUser = Depends(_WRITE), db: AsyncSession = Depends(get_db),
+) -> HTMLResponse:
+    oc, op = _org_scope(user)
+    await _bind(db, request, user)
+    try:
+        res = await db.execute(text(
+            f"UPDATE products SET is_active = NOT is_active, updated_at=now() WHERE id=:id{oc}"
+        ), {"id": pid, **op})
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        return RedirectResponse("/admin/catalog/products?saved=error_bd", status_code=303)
+    if res.rowcount == 0:
+        return RedirectResponse("/admin/catalog/products?saved=error_notfound", status_code=303)
+    return RedirectResponse("/admin/catalog/products?saved=toggle_ok", status_code=303)
+
+
+# --- Tarifas por token / unidad (price_catalog, en MICROS) ------------------
+
+@router.get("/catalog/precios", response_class=HTMLResponse)
+async def list_precios(
+    request: Request, saved: str = Query(""),
+    user: CurrentUser = Depends(_OPS), db: AsyncSession = Depends(get_db),
+) -> HTMLResponse:
+    oc, op = _org_scope(user)
+    rows = (await db.execute(text(
+        f"SELECT * FROM price_catalog WHERE is_active{oc} ORDER BY meter, unit_code"
+    ), op)).mappings().all()
+    return templates.TemplateResponse(
+        request, "admin/precios.html", {"user": user, "rows": list(rows), "saved": saved},
+    )
+
+
+@router.post("/catalog/precios/{pid}/edit", response_class=HTMLResponse)
+async def edit_precio(
+    request: Request, pid: int,
+    user: CurrentUser = Depends(_WRITE), db: AsyncSession = Depends(get_db),
+    public_price_micros: str = Form(...),
+) -> HTMLResponse:
+    """Cambia el precio (micros) preservando historial: desactiva la fila vigente
+    e inserta una nueva activa (mismo meter/unit_code). Respeta uq_price_active."""
+    try:
+        micros = int(public_price_micros)
+        if micros < 0 or micros > 100_000_000:
+            raise ValueError
+    except (ValueError, TypeError):
+        return RedirectResponse("/admin/catalog/precios?saved=error_precio", status_code=303)
+    oc, op = _org_scope(user)
+    await _bind(db, request, user)
+    try:
+        upd = await db.execute(text(
+            f"UPDATE price_catalog SET is_active=false WHERE id=:id AND is_active{oc}"
+        ), {"id": pid, **op})
+        if upd.rowcount == 0:
+            await db.rollback()
+            return RedirectResponse("/admin/catalog/precios?saved=error_notfound", status_code=303)
+        await db.execute(text(
+            "INSERT INTO price_catalog (meter, unit_code, description, public_price_micros, "
+            "cost_price_micros, currency, is_active, valid_from, created_at, organization_id) "
+            "SELECT meter, unit_code, description, :m, cost_price_micros, currency, true, "
+            "now(), now(), organization_id FROM price_catalog WHERE id=:id"
+        ), {"m": micros, "id": pid})
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        return RedirectResponse("/admin/catalog/precios?saved=error_bd", status_code=303)
+    return RedirectResponse("/admin/catalog/precios?saved=edit_ok", status_code=303)

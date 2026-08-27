@@ -10,6 +10,22 @@
 <div class="mb-4 rounded text-sm px-4 py-2 bg-red-50 border border-red-200 text-red-700">
   No se pudo actualizar (la comisión ya fue pagada o cancelada).
 </div>
+{% elif saved == 'code_ok' %}
+<div class="mb-4 rounded text-sm px-4 py-2 bg-green-50 border border-green-200 text-green-700">
+  Código agregado.
+</div>
+{% elif saved == 'toggle_ok' %}
+<div class="mb-4 rounded text-sm px-4 py-2 bg-green-50 border border-green-200 text-green-700">
+  Código actualizado.
+</div>
+{% elif saved == 'error_campos' %}
+<div class="mb-4 rounded text-sm px-4 py-2 bg-red-50 border border-red-200 text-red-700">
+  Faltan campos (nombre y código son obligatorios).
+</div>
+{% elif saved == 'error_dup' %}
+<div class="mb-4 rounded text-sm px-4 py-2 bg-red-50 border border-red-200 text-red-700">
+  Ese código ya existe (como principal o de otro vendedor).
+</div>
 {% endif %}
 
 <div class="mb-4">
@@ -33,6 +49,63 @@
     <div class="text-xs text-slate-500 mb-0.5">Clientes referidos</div>
     <div class="font-semibold">{{ dist.clientes_referidos }}</div>
   </div>
+</div>
+
+<div class="bg-white shadow-sm rounded p-4 mb-5">
+  <div class="text-sm font-semibold mb-2">Códigos de vendedor</div>
+  <p class="text-xs text-slate-500 mb-3">
+    Cada código adicional resuelve al mismo distribuidor: un cliente que entra con
+    cualquiera de estos códigos queda referido a <strong>{{ dist.name }}</strong> igual
+    que si hubiera usado el código principal. La comisión se sigue calculando solo a
+    nivel distribuidor, sin distinguir por código.
+  </p>
+  <table class="w-full text-sm mb-3">
+    <thead class="bg-slate-100 text-xs uppercase text-slate-600">
+      <tr>
+        <th class="px-3 py-2 text-left">Vendedor</th>
+        <th class="px-3 py-2 text-left">Código</th>
+        <th class="px-3 py-2 text-left">Estado</th>
+        <th class="px-3 py-2 text-left">Acción</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for cod in codigos %}
+      <tr class="border-t">
+        <td class="px-3 py-2">{{ cod.label }}</td>
+        <td class="px-3 py-2 font-mono">{{ cod.code }}</td>
+        <td class="px-3 py-2">
+          {% if cod.is_active %}
+            <span class="px-2 py-0.5 rounded-full text-xs bg-green-100 text-green-700">Activo</span>
+          {% else %}
+            <span class="px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-500">Inactivo</span>
+          {% endif %}
+        </td>
+        <td class="px-3 py-2">
+          <form method="post" action="/admin/distributors/{{ dist.id }}/codes/{{ cod.id }}/toggle">
+            <button class="text-xs text-[#4F46E5] hover:underline">
+              {{ 'Desactivar' if cod.is_active else 'Activar' }}
+            </button>
+          </form>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="px-3 py-4 text-center text-slate-400 text-sm">Sin códigos de vendedor aún.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <form method="post" action="/admin/distributors/{{ dist.id }}/codes" class="flex gap-2 items-end">
+    <div>
+      <label class="block text-xs text-slate-500 mb-0.5">Nombre del vendedor</label>
+      <input type="text" name="label" required class="border rounded px-2 py-1 text-sm">
+    </div>
+    <div>
+      <label class="block text-xs text-slate-500 mb-0.5">Código</label>
+      <input type="text" name="code" required class="border rounded px-2 py-1 text-sm font-mono uppercase">
+    </div>
+    <button class="bg-[#4F46E5] text-white rounded px-3 py-1 text-sm hover:bg-[#4338CA]">
+      Agregar código
+    </button>
+  </form>
 </div>
 
 {% set pending_total = comisiones | selectattr('status', 'eq', 'pending') | map(attribute='commission_cents') | sum %}
