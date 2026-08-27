@@ -5,6 +5,9 @@ UI HTML server-side (Jinja2 + HTMX). Acceso restringido a roles internos.
 
 from __future__ import annotations
 
+import csv
+import io
+
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
@@ -67,7 +70,11 @@ async def dashboard(
                AND date_trunc('month', created_at) = date_trunc('month', now()){oc}) AS mtd_income_cents,
           (SELECT count(*) FROM invoices
              WHERE date_trunc('month', created_at) = date_trunc('month', now()){oc}) AS invoices_mtd,
-          (SELECT count(*) FROM invoices WHERE status='pending_stamp'{oc}) AS pending_stamp
+          (SELECT count(*) FROM invoices WHERE status='pending_stamp'{oc}) AS pending_stamp,
+          (SELECT COALESCE(sum(commission_cents),0) FROM distributor_commissions
+             WHERE status='pending'{oc}) AS commissions_pending_cents,
+          (SELECT count(*) FROM distributor_commissions WHERE status='pending'{oc})
+             AS commissions_pending_count
     """), op)).mappings().one()
 
     # actividad reciente: ultimas 10 escrituras auditadas (aisladas por org via actor)
@@ -982,27 +989,91 @@ async def reports_consumption_data(
 # DISTRIBUIDORES — módulo de referidos y comisiones
 # =====================================================================
 
+async def _assert_distributor_in_org(
+    db: AsyncSession, user: CurrentUser, dist_id: int,
+) -> None:
+    """404 si el distribuidor no existe o no pertenece a la org del usuario.
+
+    Toda mutación del módulo debe llamarla ANTES de escribir: sin esto, un
+    usuario _WRITE de otra organización puede tocar datos ajenos adivinando
+    IDs secuenciales (mismo patrón del bug crítico 6faaeb5).
+    """
+    oc, op = _org_scope(user, "organization_id")
+    owns = (await db.execute(
+        text(f"SELECT 1 FROM distributors WHERE id=:did{oc}"),
+        {"did": dist_id, **op},
+    )).scalar()
+    if not owns:
+        raise HTTPException(404, "distribuidor no encontrado")
+
+
+async def _code_libre(db: AsyncSession, code: str, *, salvo_dist: int | None = None,
+                      salvo_code: int | None = None) -> bool:
+    """True si `code` no está tomado en distributors NI en distributor_codes.
+
+    Los dos catálogos comparten un mismo espacio de nombres (un cliente manda un
+    solo campo y el onboarding resuelve en cascada), pero viven en tablas
+    distintas: ningún índice único puede cubrirlos a la vez. `salvo_*` excluye la
+    propia fila para que una edición que no cambia el código no choque consigo misma.
+    """
+    d = (await db.execute(
+        text("SELECT 1 FROM distributors WHERE UPPER(referral_code) = :c "
+             "AND (:skip::bigint IS NULL OR id <> :skip)"),
+        {"c": code, "skip": salvo_dist},
+    )).scalar()
+    if d:
+        return False
+    c = (await db.execute(
+        text("SELECT 1 FROM distributor_codes WHERE UPPER(code) = :c "
+             "AND (:skip::bigint IS NULL OR id <> :skip)"),
+        {"c": code, "skip": salvo_code},
+    )).scalar()
+    return not c
+
+
 @router.get("/distributors", response_class=HTMLResponse)
 async def list_distributors(
     request: Request,
     user: CurrentUser = Depends(_OPS),
     db: AsyncSession = Depends(get_db),
+    q: str | None = None,
+    page: int = 1,
 ) -> HTMLResponse:
     oc, op = _org_scope(user, "d.organization_id")
+    per_page = 50
+    page = max(1, page)
+    term = (q or "").strip() or None
+    # el buscador cubre nombre, código principal y códigos de vendedor: el
+    # operador suele tener a mano el código que le pasó el cliente, no el nombre.
+    filtro = """
+          AND (CAST(:q AS text) IS NULL
+               OR d.name ILIKE '%'||:q||'%'
+               OR d.referral_code ILIKE '%'||:q||'%'
+               OR EXISTS (SELECT 1 FROM distributor_codes x
+                          WHERE x.distributor_id = d.id
+                            AND (x.code ILIKE '%'||:q||'%' OR x.label ILIKE '%'||:q||'%')))
+    """
+    total = (await db.execute(text(f"""
+        SELECT COUNT(*) FROM distributors d WHERE TRUE{oc}{filtro}
+    """), {"q": term, **op})).scalar() or 0
     rows = (await db.execute(text(f"""
         SELECT d.id, d.name, d.referral_code, d.commission_pct, d.is_active,
                COUNT(dc.id) FILTER (WHERE dc.status = 'pending') AS pending_count,
                COALESCE(SUM(dc.commission_cents) FILTER (WHERE dc.status = 'pending'), 0) AS pending_cents,
-               COALESCE(SUM(dc.commission_cents) FILTER (WHERE dc.status = 'paid'), 0) AS paid_cents
+               COALESCE(SUM(dc.commission_cents) FILTER (WHERE dc.status = 'paid'), 0) AS paid_cents,
+               (SELECT COUNT(*) FROM distributor_codes x
+                 WHERE x.distributor_id = d.id AND x.is_active) AS vendedores
         FROM distributors d
         LEFT JOIN distributor_commissions dc ON dc.distributor_id = d.id
-        WHERE TRUE{oc}
+        WHERE TRUE{oc}{filtro}
         GROUP BY d.id
-        ORDER BY d.name
-    """), op)).mappings().all()
+        ORDER BY d.is_active DESC, d.name
+        LIMIT :lim OFFSET :off
+    """), {"q": term, "lim": per_page, "off": (page - 1) * per_page, **op})).mappings().all()
     return templates.TemplateResponse(
         request, "admin/distributors.html",
-        {"user": user, "rows": list(rows),
+        {"user": user, "rows": list(rows), "q": q or "",
+         "page": page, "pages": max(1, -(-total // per_page)), "total": total,
          "saved": request.query_params.get("saved")},
     )
 
@@ -1015,6 +1086,7 @@ async def create_distributor_new(
     name: str = Form(...),
     referral_code: str = Form(...),
     commission_pct: float = Form(...),
+    external_ref: str = Form(default=""),
 ) -> RedirectResponse:
     nm = name.strip()
     rc = referral_code.strip().upper()
@@ -1025,23 +1097,121 @@ async def create_distributor_new(
     await bind_actor(db, actor_user_id=user.id,
                      actor_ip=request.client.host if request.client else None,
                      request_id=getattr(request.state, "request_id", None))
-    # el código principal tampoco debe repetir un código de vendedor existente
-    # (uq_distributors_referral_code solo protege dentro de distributors)
-    clash = (await db.execute(
-        text("SELECT 1 FROM distributor_codes WHERE UPPER(code) = :c"),
-        {"c": rc},
-    )).scalar()
-    if clash:
+    if not await _code_libre(db, rc):
         return RedirectResponse("/admin/distributors?saved=error_dup", status_code=303)
     try:
         await db.execute(
-            text("""INSERT INTO distributors (name, referral_code, commission_pct, organization_id)
-                    VALUES (:n, :rc, :pct, :org)"""),
-            {"n": nm, "rc": rc, "pct": commission_pct, "org": user.organization_id},
+            text("""INSERT INTO distributors
+                      (name, referral_code, commission_pct, external_ref, organization_id)
+                    VALUES (:n, :rc, :pct, :ext, :org)"""),
+            {"n": nm, "rc": rc, "pct": commission_pct,
+             "ext": external_ref.strip() or None, "org": user.organization_id},
         )
     except Exception:
         return RedirectResponse("/admin/distributors?saved=error_dup", status_code=303)
     return RedirectResponse("/admin/distributors?saved=ok", status_code=303)
+
+
+@router.post("/distributors/{dist_id}/edit", response_class=RedirectResponse)
+async def edit_distributor(
+    request: Request,
+    dist_id: int,
+    user: CurrentUser = Depends(_WRITE),
+    db: AsyncSession = Depends(get_db),
+    name: str = Form(...),
+    referral_code: str = Form(...),
+    commission_pct: float = Form(...),
+    external_ref: str = Form(default=""),
+) -> RedirectResponse:
+    nm = name.strip()
+    rc = referral_code.strip().upper()
+    if not nm or not rc:
+        return RedirectResponse(f"/admin/distributors/{dist_id}?saved=error_campos", status_code=303)
+    if not (0 <= commission_pct <= 100):
+        return RedirectResponse(f"/admin/distributors/{dist_id}?saved=error_pct", status_code=303)
+    await _assert_distributor_in_org(db, user, dist_id)
+    await bind_actor(db, actor_user_id=user.id,
+                     actor_ip=request.client.host if request.client else None,
+                     request_id=getattr(request.state, "request_id", None))
+    if not await _code_libre(db, rc, salvo_dist=dist_id):
+        return RedirectResponse(f"/admin/distributors/{dist_id}?saved=error_dup", status_code=303)
+    # El % nuevo NO reescribe comisiones ya devengadas: distributor_commissions
+    # guarda su propio commission_pct por fila (append-only). Solo aplica de aquí
+    # en adelante.
+    try:
+        await db.execute(text("""
+            UPDATE distributors
+            SET name = :n, referral_code = :rc, commission_pct = :pct,
+                external_ref = :ext, updated_at = now()
+            WHERE id = :did
+        """), {"did": dist_id, "n": nm, "rc": rc, "pct": commission_pct,
+               "ext": external_ref.strip() or None})
+    except Exception:
+        return RedirectResponse(f"/admin/distributors/{dist_id}?saved=error_dup", status_code=303)
+    return RedirectResponse(f"/admin/distributors/{dist_id}?saved=edit_ok", status_code=303)
+
+
+@router.post("/distributors/{dist_id}/toggle", response_class=RedirectResponse)
+async def toggle_distributor(
+    request: Request,
+    dist_id: int,
+    user: CurrentUser = Depends(_WRITE),
+    db: AsyncSession = Depends(get_db),
+) -> RedirectResponse:
+    """Activa/desactiva un distribuidor.
+
+    Un distribuidor inactivo deja de resolver en el onboarding (su código y los
+    de sus vendedores dejan de captar clientes nuevos), pero conserva sus
+    comisiones ya devengadas: siguen listadas y se pueden pagar.
+    """
+    await _assert_distributor_in_org(db, user, dist_id)
+    await bind_actor(db, actor_user_id=user.id,
+                     actor_ip=request.client.host if request.client else None,
+                     request_id=getattr(request.state, "request_id", None))
+    await db.execute(
+        text("UPDATE distributors SET is_active = NOT is_active, updated_at = now() "
+             "WHERE id = :did"),
+        {"did": dist_id},
+    )
+    return RedirectResponse(f"/admin/distributors/{dist_id}?saved=toggle_dist_ok", status_code=303)
+
+
+@router.get("/distributors/commissions.csv")
+async def export_pending_commissions(
+    user: CurrentUser = Depends(_OPS),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """CSV de comisiones pendientes de pago — insumo para armar la transferencia.
+
+    Declarado ANTES de /distributors/{dist_id}: si fuera después, esa ruta
+    intentaría leer "commissions.csv" como int y devolvería 422.
+    """
+    oc, op = _org_scope(user, "d.organization_id")
+    rows = (await db.execute(text(f"""
+        SELECT d.name AS distribuidor, d.referral_code,
+               COALESCE(c.trade_name, c.legal_name) AS cliente,
+               dc.base_cents, dc.commission_pct, dc.commission_cents, dc.created_at
+        FROM distributor_commissions dc
+        JOIN distributors d ON d.id = dc.distributor_id
+        JOIN clients c ON c.id = dc.client_id
+        WHERE dc.status = 'pending'{oc}
+        ORDER BY d.name, dc.created_at
+    """), op)).mappings().all()
+
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["distribuidor", "codigo", "cliente", "primera_recarga_mxn",
+                "comision_pct", "comision_mxn", "fecha"])
+    for r in rows:
+        w.writerow([r["distribuidor"], r["referral_code"] or "", r["cliente"],
+                    f"{r['base_cents'] / 100:.2f}", f"{float(r['commission_pct']):.2f}",
+                    f"{r['commission_cents'] / 100:.2f}",
+                    r["created_at"].strftime("%Y-%m-%d") if r["created_at"] else ""])
+    return Response(
+        content=buf.getvalue().encode("utf-8-sig"),  # BOM: Excel lo abre con acentos
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="comisiones-pendientes.csv"'},
+    )
 
 
 @router.get("/distributors/{dist_id}", response_class=HTMLResponse)
@@ -1054,11 +1224,11 @@ async def distributor_detail(
     oc, op = _org_scope(user, "d.organization_id")
     dist = (await db.execute(text(f"""
         SELECT d.id, d.name, d.referral_code, d.commission_pct, d.is_active,
-               COUNT(DISTINCT c.id) AS clientes_referidos
+               d.external_ref,
+               (SELECT COUNT(*) FROM clients c WHERE c.referral_distributor_id = d.id)
+                 AS clientes_referidos
         FROM distributors d
-        LEFT JOIN clients c ON c.referral_distributor_id = d.id
         WHERE d.id = :did{oc}
-        GROUP BY d.id
     """), {"did": dist_id, **op})).mappings().first()
     if not dist:
         raise HTTPException(404, "distribuidor no encontrado")
@@ -1077,12 +1247,21 @@ async def distributor_detail(
         SELECT id, label, code, is_active, created_at
         FROM distributor_codes
         WHERE distributor_id = :did
-        ORDER BY created_at DESC
+        ORDER BY is_active DESC, created_at DESC
+    """), {"did": dist_id})).mappings().all()
+    # quiénes son los clientes referidos, no solo cuántos
+    referidos = (await db.execute(text("""
+        SELECT c.id, COALESCE(c.trade_name, c.legal_name) AS nombre,
+               c.status, c.created_at, c.billing_email
+        FROM clients c
+        WHERE c.referral_distributor_id = :did
+        ORDER BY c.created_at DESC
+        LIMIT 200
     """), {"did": dist_id})).mappings().all()
     return templates.TemplateResponse(
         request, "admin/distributor_detail.html",
         {"user": user, "dist": dict(dist), "comisiones": list(comisiones),
-         "codigos": list(codigos),
+         "codigos": list(codigos), "referidos": list(referidos),
          "saved": request.query_params.get("saved")},
     )
 
@@ -1100,22 +1279,11 @@ async def create_distributor_code(
     cd = code.strip().upper()
     if not lb or not cd:
         return RedirectResponse(f"/admin/distributors/{dist_id}?saved=error_campos", status_code=303)
-    oc, op = _org_scope(user, "organization_id")
-    owns = (await db.execute(
-        text(f"SELECT 1 FROM distributors WHERE id=:did{oc}"),
-        {"did": dist_id, **op},
-    )).scalar()
-    if not owns:
-        raise HTTPException(404, "distribuidor no encontrado")
+    await _assert_distributor_in_org(db, user, dist_id)
     await bind_actor(db, actor_user_id=user.id,
                      actor_ip=request.client.host if request.client else None,
                      request_id=getattr(request.state, "request_id", None))
-    # el código no debe repetir el código principal de NINGÚN distribuidor
-    clash = (await db.execute(
-        text("SELECT 1 FROM distributors WHERE UPPER(referral_code) = :c"),
-        {"c": cd},
-    )).scalar()
-    if clash:
+    if not await _code_libre(db, cd):
         return RedirectResponse(f"/admin/distributors/{dist_id}?saved=error_dup", status_code=303)
     try:
         await db.execute(
@@ -1128,6 +1296,37 @@ async def create_distributor_code(
     return RedirectResponse(f"/admin/distributors/{dist_id}?saved=code_ok", status_code=303)
 
 
+@router.post("/distributors/{dist_id}/codes/{code_id}/edit", response_class=RedirectResponse)
+async def edit_distributor_code(
+    request: Request,
+    dist_id: int,
+    code_id: int,
+    user: CurrentUser = Depends(_WRITE),
+    db: AsyncSession = Depends(get_db),
+    label: str = Form(...),
+    code: str = Form(...),
+) -> RedirectResponse:
+    lb = label.strip()
+    cd = code.strip().upper()
+    if not lb or not cd:
+        return RedirectResponse(f"/admin/distributors/{dist_id}?saved=error_campos", status_code=303)
+    await _assert_distributor_in_org(db, user, dist_id)
+    await bind_actor(db, actor_user_id=user.id,
+                     actor_ip=request.client.host if request.client else None,
+                     request_id=getattr(request.state, "request_id", None))
+    if not await _code_libre(db, cd, salvo_code=code_id):
+        return RedirectResponse(f"/admin/distributors/{dist_id}?saved=error_dup", status_code=303)
+    try:
+        result = await db.execute(text("""
+            UPDATE distributor_codes SET label = :lb, code = :cd, updated_at = now()
+            WHERE id = :cid AND distributor_id = :did
+        """), {"cid": code_id, "did": dist_id, "lb": lb, "cd": cd})
+    except Exception:
+        return RedirectResponse(f"/admin/distributors/{dist_id}?saved=error_dup", status_code=303)
+    saved = "code_edit_ok" if result.rowcount else "error_estado"
+    return RedirectResponse(f"/admin/distributors/{dist_id}?saved={saved}", status_code=303)
+
+
 @router.post("/distributors/{dist_id}/codes/{code_id}/toggle", response_class=RedirectResponse)
 async def toggle_distributor_code(
     request: Request,
@@ -1136,21 +1335,12 @@ async def toggle_distributor_code(
     user: CurrentUser = Depends(_WRITE),
     db: AsyncSession = Depends(get_db),
 ) -> RedirectResponse:
-    # aislamiento multi-tenant: sin esto, cualquier usuario _WRITE de OTRA
-    # organización podía activar/desactivar el código de un distribuidor ajeno
-    # con solo adivinar dist_id/code_id (mismo patrón de bug que 6faaeb5).
-    oc, op = _org_scope(user, "organization_id")
-    owns = (await db.execute(
-        text(f"SELECT 1 FROM distributors WHERE id=:did{oc}"),
-        {"did": dist_id, **op},
-    )).scalar()
-    if not owns:
-        raise HTTPException(404, "distribuidor no encontrado")
+    await _assert_distributor_in_org(db, user, dist_id)
     await bind_actor(db, actor_user_id=user.id,
                      actor_ip=request.client.host if request.client else None,
                      request_id=getattr(request.state, "request_id", None))
     result = await db.execute(text("""
-        UPDATE distributor_codes SET is_active = NOT is_active
+        UPDATE distributor_codes SET is_active = NOT is_active, updated_at = now()
         WHERE id = :cid AND distributor_id = :did
     """), {"cid": code_id, "did": dist_id})
     saved = "toggle_ok" if result.rowcount else "error_estado"
@@ -1167,6 +1357,7 @@ async def mark_commission_paid(
     db: AsyncSession = Depends(get_db),
     notes: str = Form(default=""),
 ) -> RedirectResponse:
+    await _assert_distributor_in_org(db, user, dist_id)
     await bind_actor(db, actor_user_id=user.id,
                      actor_ip=request.client.host if request.client else None,
                      request_id=getattr(request.state, "request_id", None))
@@ -1176,6 +1367,32 @@ async def mark_commission_paid(
         WHERE id = :cid AND distributor_id = :did AND status = 'pending'
     """), {"cid": cid, "did": dist_id, "u": user.id, "n": notes.strip() or None})
     saved = "paid_ok" if result.rowcount else "error_estado"
+    return RedirectResponse(f"/admin/distributors/{dist_id}?saved={saved}", status_code=303)
+
+
+@router.post("/distributors/{dist_id}/commissions/pay-all", response_class=RedirectResponse)
+async def pay_all_commissions(
+    request: Request,
+    dist_id: int,
+    user: CurrentUser = Depends(_WRITE),
+    db: AsyncSession = Depends(get_db),
+    notes: str = Form(default=""),
+) -> RedirectResponse:
+    """Liquida de una sola vez todas las comisiones pendientes del distribuidor.
+
+    Refleja cómo se paga en la práctica: una transferencia por el total, no una
+    por comisión. La misma referencia queda en todas las filas liquidadas.
+    """
+    await _assert_distributor_in_org(db, user, dist_id)
+    await bind_actor(db, actor_user_id=user.id,
+                     actor_ip=request.client.host if request.client else None,
+                     request_id=getattr(request.state, "request_id", None))
+    result = await db.execute(text("""
+        UPDATE distributor_commissions
+        SET status = 'paid', paid_at = now(), paid_by_user_id = :u, notes = :n
+        WHERE distributor_id = :did AND status = 'pending'
+    """), {"did": dist_id, "u": user.id, "n": notes.strip() or None})
+    saved = f"paid_all_ok:{result.rowcount}" if result.rowcount else "error_estado"
     return RedirectResponse(f"/admin/distributors/{dist_id}?saved={saved}", status_code=303)
 
 

@@ -2,29 +2,29 @@
 {% block heading %}Distribuidor — {{ dist.name }}{% endblock %}
 {% block content %}
 
-{% if saved == 'paid_ok' %}
+{% set base = saved.split(':')[0] if saved else '' %}
+{% set ok_msgs = {
+  'paid_ok': 'Comisión marcada como pagada.',
+  'paid_all_ok': 'Comisiones liquidadas.',
+  'code_ok': 'Código de vendedor agregado.',
+  'code_edit_ok': 'Código de vendedor actualizado.',
+  'toggle_ok': 'Estado del código actualizado.',
+  'edit_ok': 'Distribuidor actualizado.',
+  'toggle_dist_ok': 'Estado del distribuidor actualizado.'
+} %}
+{% set err_msgs = {
+  'error_estado': 'No se pudo actualizar (la comisión ya fue pagada o cancelada).',
+  'error_campos': 'Faltan campos obligatorios.',
+  'error_pct': 'El porcentaje debe estar entre 0 y 100.',
+  'error_dup': 'Ese código ya está en uso (por un distribuidor o por un vendedor).'
+} %}
+{% if base in ok_msgs %}
 <div class="mb-4 rounded text-sm px-4 py-2 bg-green-50 border border-green-200 text-green-700">
-  Comisión marcada como pagada.
+  {{ ok_msgs[base] }}{% if base == 'paid_all_ok' %} ({{ saved.split(':')[1] }} comisiones){% endif %}
 </div>
-{% elif saved == 'error_estado' %}
+{% elif base in err_msgs %}
 <div class="mb-4 rounded text-sm px-4 py-2 bg-red-50 border border-red-200 text-red-700">
-  No se pudo actualizar (la comisión ya fue pagada o cancelada).
-</div>
-{% elif saved == 'code_ok' %}
-<div class="mb-4 rounded text-sm px-4 py-2 bg-green-50 border border-green-200 text-green-700">
-  Código agregado.
-</div>
-{% elif saved == 'toggle_ok' %}
-<div class="mb-4 rounded text-sm px-4 py-2 bg-green-50 border border-green-200 text-green-700">
-  Código actualizado.
-</div>
-{% elif saved == 'error_campos' %}
-<div class="mb-4 rounded text-sm px-4 py-2 bg-red-50 border border-red-200 text-red-700">
-  Faltan campos (nombre y código son obligatorios).
-</div>
-{% elif saved == 'error_dup' %}
-<div class="mb-4 rounded text-sm px-4 py-2 bg-red-50 border border-red-200 text-red-700">
-  Ese código ya existe (como principal o de otro vendedor).
+  {{ err_msgs[base] }}
 </div>
 {% endif %}
 
@@ -32,23 +32,64 @@
   <a href="/admin/distributors" class="text-sm text-[#4F46E5] hover:underline">← Distribuidores</a>
 </div>
 
-<div class="bg-white shadow-sm rounded p-4 mb-5 grid md:grid-cols-4 gap-4 text-sm">
-  <div>
-    <div class="text-xs text-slate-500 mb-0.5">Nombre</div>
-    <div class="font-semibold">{{ dist.name }}</div>
+{% if not dist.is_active %}
+<div class="mb-4 rounded text-sm px-4 py-2 bg-slate-100 border border-slate-300 text-slate-600">
+  Este distribuidor está <strong>inactivo</strong>: su código y los de sus vendedores ya no captan
+  clientes nuevos. Las comisiones ya devengadas se conservan y se pueden pagar.
+</div>
+{% endif %}
+
+<div class="bg-white shadow-sm rounded p-4 mb-5">
+  <div class="flex items-center justify-between mb-3">
+    <div class="text-sm font-semibold">Datos del distribuidor</div>
+    <div class="flex items-center gap-3">
+      {% if dist.is_active %}
+        <span class="px-2 py-0.5 rounded-full text-xs bg-green-100 text-green-700">Activo</span>
+      {% else %}
+        <span class="px-2 py-0.5 rounded-full text-xs bg-slate-200 text-slate-600">Inactivo</span>
+      {% endif %}
+      <form method="post" action="/admin/distributors/{{ dist.id }}/toggle"
+            onsubmit="return confirm({% if dist.is_active %}'Al desactivarlo, su código y los de sus vendedores dejarán de captar clientes nuevos. ¿Continuar?'{% else %}'¿Reactivar este distribuidor?'{% endif %})">
+        <button class="text-xs border rounded px-3 py-1 hover:bg-slate-100">
+          {{ 'Desactivar' if dist.is_active else 'Reactivar' }}
+        </button>
+      </form>
+    </div>
   </div>
-  <div>
-    <div class="text-xs text-slate-500 mb-0.5">Código de referido</div>
-    <div class="font-mono text-base">{{ dist.referral_code or '—' }}</div>
-  </div>
-  <div>
-    <div class="text-xs text-slate-500 mb-0.5">Comisión sobre 1ª recarga</div>
-    <div class="font-semibold text-[#4F46E5]">{{ '%.2f'|format(dist.commission_pct) }}%</div>
-  </div>
-  <div>
-    <div class="text-xs text-slate-500 mb-0.5">Clientes referidos</div>
-    <div class="font-semibold">{{ dist.clientes_referidos }}</div>
-  </div>
+  <form method="post" action="/admin/distributors/{{ dist.id }}/edit"
+        class="grid md:grid-cols-5 gap-2 text-sm items-end">
+    <div>
+      <label class="block text-xs text-slate-500 mb-1">Nombre *</label>
+      <input type="text" name="name" required value="{{ dist.name }}"
+             class="w-full border rounded px-2 py-1.5">
+    </div>
+    <div>
+      <label class="block text-xs text-slate-500 mb-1">Código de referido *</label>
+      <input type="text" name="referral_code" required value="{{ dist.referral_code or '' }}"
+             class="w-full border rounded px-2 py-1.5 font-mono uppercase"
+             oninput="this.value=this.value.toUpperCase()">
+    </div>
+    <div>
+      <label class="block text-xs text-slate-500 mb-1">Comisión % *</label>
+      <input type="number" name="commission_pct" required min="0" max="100" step="0.01"
+             value="{{ '%.2f'|format(dist.commission_pct) }}"
+             class="w-full border rounded px-2 py-1.5">
+    </div>
+    <div>
+      <label class="block text-xs text-slate-500 mb-1">Referencia externa</label>
+      <input type="text" name="external_ref" value="{{ dist.external_ref or '' }}"
+             class="w-full border rounded px-2 py-1.5">
+    </div>
+    <div>
+      <button class="w-full bg-[#4F46E5] text-white rounded px-4 py-1.5 hover:bg-[#4338CA] text-sm">
+        Guardar cambios
+      </button>
+    </div>
+  </form>
+  <p class="text-xs text-slate-400 mt-2">
+    Cambiar el % no altera las comisiones ya registradas: cada una guarda el porcentaje con el que se
+    calculó. El nuevo valor aplica de aquí en adelante.
+  </p>
 </div>
 
 <div class="bg-white shadow-sm rounded p-4 mb-5">
@@ -65,27 +106,42 @@
         <th class="px-3 py-2 text-left">Vendedor</th>
         <th class="px-3 py-2 text-left">Código</th>
         <th class="px-3 py-2 text-left">Estado</th>
-        <th class="px-3 py-2 text-left">Acción</th>
+        <th class="px-3 py-2 text-left">Acciones</th>
       </tr>
     </thead>
     <tbody>
       {% for cod in codigos %}
-      <tr class="border-t">
-        <td class="px-3 py-2">{{ cod.label }}</td>
-        <td class="px-3 py-2 font-mono">{{ cod.code }}</td>
+      <tr class="border-t {% if not cod.is_active %}opacity-60{% endif %}">
+        <form method="post" action="/admin/distributors/{{ dist.id }}/codes/{{ cod.id }}/edit"
+              id="edit-code-{{ cod.id }}"></form>
+        <td class="px-3 py-2">
+          <input type="text" name="label" value="{{ cod.label }}" required
+                 form="edit-code-{{ cod.id }}"
+                 class="border rounded px-2 py-1 text-sm w-full">
+        </td>
+        <td class="px-3 py-2">
+          <input type="text" name="code" value="{{ cod.code }}" required
+                 form="edit-code-{{ cod.id }}"
+                 class="border rounded px-2 py-1 text-sm font-mono uppercase w-full"
+                 oninput="this.value=this.value.toUpperCase()">
+        </td>
         <td class="px-3 py-2">
           {% if cod.is_active %}
             <span class="px-2 py-0.5 rounded-full text-xs bg-green-100 text-green-700">Activo</span>
           {% else %}
-            <span class="px-2 py-0.5 rounded-full text-xs bg-slate-100 text-slate-500">Inactivo</span>
+            <span class="px-2 py-0.5 rounded-full text-xs bg-slate-200 text-slate-600">Inactivo</span>
           {% endif %}
         </td>
         <td class="px-3 py-2">
-          <form method="post" action="/admin/distributors/{{ dist.id }}/codes/{{ cod.id }}/toggle">
-            <button class="text-xs text-[#4F46E5] hover:underline">
-              {{ 'Desactivar' if cod.is_active else 'Activar' }}
-            </button>
-          </form>
+          <div class="flex gap-3 items-center">
+            <button form="edit-code-{{ cod.id }}"
+                    class="text-xs text-[#4F46E5] hover:underline">Guardar</button>
+            <form method="post" action="/admin/distributors/{{ dist.id }}/codes/{{ cod.id }}/toggle">
+              <button class="text-xs text-slate-500 hover:underline">
+                {{ 'Desactivar' if cod.is_active else 'Activar' }}
+              </button>
+            </form>
+          </div>
         </td>
       </tr>
       {% else %}
@@ -100,7 +156,8 @@
     </div>
     <div>
       <label class="block text-xs text-slate-500 mb-0.5">Código</label>
-      <input type="text" name="code" required class="border rounded px-2 py-1 text-sm font-mono uppercase">
+      <input type="text" name="code" required class="border rounded px-2 py-1 text-sm font-mono uppercase"
+             oninput="this.value=this.value.toUpperCase()">
     </div>
     <button class="bg-[#4F46E5] text-white rounded px-3 py-1 text-sm hover:bg-[#4338CA]">
       Agregar código
@@ -108,9 +165,51 @@
   </form>
 </div>
 
+<div class="bg-white shadow-sm rounded p-4 mb-5">
+  <div class="text-sm font-semibold mb-3">
+    Clientes referidos
+    <span class="text-xs font-normal text-slate-400">({{ dist.clientes_referidos }})</span>
+  </div>
+  <table class="w-full text-sm">
+    <thead class="bg-slate-100 text-xs uppercase text-slate-600">
+      <tr>
+        <th class="px-3 py-2 text-left">Cliente</th>
+        <th class="px-3 py-2 text-left">Correo</th>
+        <th class="px-3 py-2 text-left">Estado</th>
+        <th class="px-3 py-2 text-left">Alta</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for c in referidos %}
+      <tr class="border-t">
+        <td class="px-3 py-2">
+          <a href="/admin/clients/{{ c.id }}" class="text-[#4F46E5] hover:underline">{{ c.nombre }}</a>
+        </td>
+        <td class="px-3 py-2 text-xs text-slate-500">{{ c.billing_email }}</td>
+        <td class="px-3 py-2">
+          {% if c.status == 'active' %}
+            <span class="px-2 py-0.5 rounded-full text-xs bg-green-100 text-green-700">Activo</span>
+          {% elif c.status == 'suspended' %}
+            <span class="px-2 py-0.5 rounded-full text-xs bg-amber-100 text-amber-700">Suspendido</span>
+          {% else %}
+            <span class="px-2 py-0.5 rounded-full text-xs bg-slate-200 text-slate-600">{{ c.status }}</span>
+          {% endif %}
+        </td>
+        <td class="px-3 py-2 text-xs text-slate-500">
+          {{ c.created_at.strftime('%Y-%m-%d') if c.created_at else '—' }}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="4" class="px-3 py-4 text-center text-slate-400 text-sm">Aún no ha referido clientes.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
 {% set pending_total = comisiones | selectattr('status', 'eq', 'pending') | map(attribute='commission_cents') | sum %}
 {% set paid_total    = comisiones | selectattr('status', 'eq', 'paid')    | map(attribute='commission_cents') | sum %}
-<div class="flex gap-4 mb-4">
+{% set pending_count = comisiones | selectattr('status', 'eq', 'pending') | list | length %}
+<div class="flex flex-wrap gap-4 items-center mb-4">
   <div class="bg-amber-50 border border-amber-200 rounded px-4 py-2 text-sm">
     <span class="text-slate-500">Pendiente de pago:</span>
     <span class="font-bold text-amber-700 ml-2">${{ '%.2f'|format(pending_total/100) }} MXN</span>
@@ -119,6 +218,17 @@
     <span class="text-slate-500">Total pagado:</span>
     <span class="font-bold text-green-700 ml-2">${{ '%.2f'|format(paid_total/100) }} MXN</span>
   </div>
+  {% if pending_count > 1 %}
+  <form method="post" action="/admin/distributors/{{ dist.id }}/commissions/pay-all"
+        class="flex gap-2 items-center"
+        onsubmit="return confirm('Se marcarán {{ pending_count }} comisiones como pagadas por un total de ${{ '%.2f'|format(pending_total/100) }} MXN. Esta acción no se puede deshacer. ¿Continuar?')">
+    <input type="text" name="notes" placeholder="Ref. de la transferencia"
+           class="border rounded px-2 py-1 text-xs w-44">
+    <button class="bg-green-600 text-white rounded px-3 py-1 text-xs hover:bg-green-700">
+      Liquidar las {{ pending_count }} pendientes
+    </button>
+  </form>
+  {% endif %}
 </div>
 
 <div class="bg-white shadow-sm rounded overflow-x-auto">
@@ -128,7 +238,7 @@
         <th class="px-3 py-2 text-left">Fecha</th>
         <th class="px-3 py-2 text-left">Cliente</th>
         <th class="px-3 py-2 text-right">1ª recarga</th>
-        <th class="px-3 py-2 text-right">Comisión ({{ '%.0f'|format(dist.commission_pct) }}%)</th>
+        <th class="px-3 py-2 text-right">Comisión</th>
         <th class="px-3 py-2 text-left">Estado</th>
         <th class="px-3 py-2 text-left">Pagado el</th>
         <th class="px-3 py-2 text-left">Acción</th>
@@ -140,7 +250,10 @@
         <td class="px-3 py-2 text-xs text-slate-500">{{ c.created_at.strftime('%Y-%m-%d') if c.created_at else '—' }}</td>
         <td class="px-3 py-2">{{ c.cliente }}</td>
         <td class="px-3 py-2 text-right">${{ '%.2f'|format(c.base_cents/100) }}</td>
-        <td class="px-3 py-2 text-right font-semibold">${{ '%.2f'|format(c.commission_cents/100) }}</td>
+        <td class="px-3 py-2 text-right font-semibold">
+          ${{ '%.2f'|format(c.commission_cents/100) }}
+          <span class="text-xs text-slate-400">({{ '%.0f'|format(c.commission_pct) }}%)</span>
+        </td>
         <td class="px-3 py-2">
           {% if c.status == 'pending' %}
             <span class="px-2 py-0.5 rounded-full text-xs bg-amber-100 text-amber-700">Pendiente</span>

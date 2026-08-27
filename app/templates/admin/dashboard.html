@@ -21,6 +21,21 @@
   </div>
 </div>
 
+{% if m.commissions_pending_count %}
+<a href="/admin/distributors"
+   class="mt-4 flex items-center justify-between bg-amber-50 border border-amber-200 rounded px-5 py-3 hover:bg-amber-100">
+  <div>
+    <div class="text-xs text-amber-700">Comisiones de distribuidores por pagar</div>
+    <div class="text-2xl font-bold text-amber-800">
+      ${{ '%.2f'|format(m.commissions_pending_cents / 100) }} MXN
+    </div>
+  </div>
+  <div class="text-xs text-amber-700">
+    {{ m.commissions_pending_count }} pendiente{{ '' if m.commissions_pending_count == 1 else 's' }} →
+  </div>
+</a>
+{% endif %}
+
 <div class="grid grid-cols-1 lg:grid-cols-3 gap-4 mt-6">
   {# actividad reciente: ultimas 10 del audit_log #}
   <div class="bg-white p-5 rounded shadow-sm lg:col-span-2">
