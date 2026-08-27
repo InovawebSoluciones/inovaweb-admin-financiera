@@ -314,7 +314,20 @@ pospuesta hasta demanda real.
 
 ## 12. ESTADO ACTUAL Y PENDIENTES (actualizar al cerrar cada sesion)
 
-**Sesion al: 2026-06-19. Foco: módulo de referidos de distribuidores (mig 038 + accrual + panel admin) + docs formales.**
+**Sesion al: 2026-08-27. Foco: códigos de vendedor por distribuidor (mig 040) + fix IDOR + docs formales + sync de CRUD desplegado en vivo.**
+
+### ✅ Sesion 2026-08-27 — Códigos de vendedor por distribuidor (ADR-032, commit 1c85d35)
+- **Migración 040:** tabla `distributor_codes` — códigos hijos de un distribuidor (uno por vendedor), sin tabla de comisión propia. La comisión sigue siendo 100% por `distributors.commission_pct`; explícitamente NO se calcula por vendedor (pedido así por Conrado).
+- **`api_router.py`:** `POST /apps/onboard` resuelve `referral_code` en cascada — primero `distributors.referral_code`, si no matchea entonces `distributor_codes.code` (activo) → mismo `distributor_id`.
+- **Panel `/admin/distributors/{id}`:** sección "Códigos de vendedor" (alta + activar/desactivar). Sin portal de autoservicio para el distribuidor — pedido explícitamente fuera de esta iteración ("no, se hace por la noche... no vamos a hacer portal").
+- **🔴 Hallazgo de seguridad (encontrado y corregido el mismo día):** `toggle_distributor_code` salió a producción sin chequeo de `organization_id` — IDOR cross-tenant, mismo patrón que `6faaeb5`. Detectado en `code-review` posterior al primer deploy, corregido y redesplegado.
+- **Sincronizado desde el VPS:** mientras se trabajaba esta sesión, alguien desplegó directo en el servidor (sin git) un CRUD de servicios/productos/precios (`edit_service`, `toggle_service`, `create_product`, `edit_product`). Se trajo al repo para no perderlo — **queda pendiente auditar ese código con `code-review`**, no se revisó en esta sesión (no era el foco).
+- **Validación:** 2 corridas contra Postgres desechable (esquema sintético + volcado `--schema-only` real de prod) antes de cada uno de los 2 despliegues.
+- **Docs:** ADR-032 + CHANGELOG 0.11.0 + addendum OWASP 2026-08-27.
+- **Fuera de alcance (a pedido explícito):** portal de autoservicio del distribuidor, trazabilidad por vendedor (`referral_sales_rep_id`), comisión por vendedor.
+- **Aparte, en esta sesión:** se reseteó la contraseña del admin `conrado.torres@inovaweb.com.mx` en prod (Argon2, generado y verificado dentro del contenedor real) — no es código, no quedó en git a propósito.
+
+**Anterior — Sesion al: 2026-06-19. Foco: módulo de referidos de distribuidores (mig 038 + accrual + panel admin) + docs formales.**
 
 > **ACTUALIZACION 2026-06-08 (sesion LiaForge) — leer esto primero:**
 > - **P2 (consumo E2E) HECHO y EN PROD:** IA Perplexity via proxy nuevo del Medidor (/llm/perplexity, mide+debita wallet client-5; PROXY_DEFAULT_WALLETS factura al cliente) + email via endpoint nuevo Centro POST /v1/messages/record (Scraping send_email lo reporta) -> sync CAF->Finanzas (source=medidor/messages) por cron */5. Verificado: $500 -> $497.69. Key DeepSeek corregida.

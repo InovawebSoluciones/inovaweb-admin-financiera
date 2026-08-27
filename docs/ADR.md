@@ -1254,3 +1254,28 @@ Inovaweb opera con distribuidores que reclutan clientes para los productos SaaS 
 - El estado `pending` es la única fuente de verdad de lo que se debe pagar; no hay conciliación automática.
 - Si un cliente se registra sin código de referido, `referral_distributor_id` queda NULL y no se genera comisión — correcto.
 - No hay beneficio para el cliente: el código es del distribuidor, no un cupón de descuento (ver ADR-025/029 para el flujo de promos con bono al cliente).
+
+## ADR-032: Códigos secundarios de distribuidor (vendedores)
+
+**Fecha:** 2026-08-27
+**Estado:** Aprobado
+
+### Contexto
+Los distribuidores (ADR-031) piden que su propia gente de ventas pueda repartir un código distinto al principal, sin que eso implique calcular una comisión separada por vendedor — el acuerdo comercial de comisión sigue siendo por distribuidor, no por vendedor. Explícitamente fuera de alcance en esta iteración: portal de autoservicio para el distribuidor (login propio); eso queda para otra sesión. Solo se pidió la función de alta del código y la validación de que resuelve al distribuidor correcto.
+
+### Decisión
+- **Nueva tabla `distributor_codes`** (migración `040`): `distributor_id FK`, `label` (nombre del vendedor, solo descriptivo), `code` (único case-insensitive, mismo espacio de nombres que `distributors.referral_code`), `is_active`.
+- **Resolución en cascada** en `POST /api/v2/apps/onboard` (`api_router.py`): primero se busca `body.referral_code` en `distributors.referral_code` (como antes); si no matchea, se busca en `distributor_codes.code` (activo) y se toma su `distributor_id`. El cliente sigue mandando un solo campo `referral_code`, sin saber si es principal o de vendedor.
+- **La comisión NO cambia**: `_maybe_accrue_commission` (`prepago.py`) sigue leyendo únicamente `distributors.commission_pct` vía `clients.referral_distributor_id` — no importa si el cliente entró por el código del distribuidor o el de un vendedor, la comisión es la misma y se acredita al mismo distribuidor.
+- **Alta y gestión desde el panel interno** (`/admin/distributors/{id}`, sección "Códigos de vendedor"): alta (nombre + código) y activar/desactivar. Sin portal propio del distribuidor todavía — lo gestiona Inovaweb.
+- **Unicidad cruzada verificada a nivel de aplicación** (no hay constraint de BD entre tablas): un código de vendedor no puede repetir el `referral_code` de ningún distribuidor y viceversa.
+
+### Alternativas consideradas
+- **Portal de autoservicio para que el distribuidor gestione sus propios vendedores**: es el diseño completo que se había planteado, pero el usuario pidió explícitamente acotar esta iteración solo a la función de alta + validación de resolución; el portal queda para otra sesión.
+- **Trazar qué vendedor trajo a cada cliente** (`clients.referral_sales_rep_id`): descartado en esta iteración — no se pidió y no participa del cálculo de comisión.
+
+### Consecuencias
+- Cero cambio de comportamiento para el flujo existente: mientras no exista un código de vendedor cargado, la resolución es idéntica a antes (`IF dist_id IS NULL THEN ...` es la única rama nueva).
+- Un código de vendedor desactivado no resuelve a nada — el cliente queda sin `referral_distributor_id`, igual que si nunca hubiera mandado un código.
+- Validado dos veces contra Postgres desechable antes de tocar producción: esquema sintético mínimo y volcado `--schema-only` real de prod. Ambas corridas confirmaron: código principal → distribuidor correcto, código de vendedor → mismo distribuidor, código inactivo → no resuelve.
+- **Hallazgo de seguridad post-despliegue, ya corregido**: `toggle_distributor_code` salió a producción sin verificar `organization_id` — un usuario `_WRITE` de otra organización tenant podía activar/desactivar el código de un distribuidor ajeno adivinando IDs (mismo patrón de bug que el fix crítico 6faaeb5 de este módulo). Estuvo expuesto en prod desde el primer despliegue de este módulo hasta que el `code-review` posterior lo detectó; corregido y redesplegado el mismo día. Sin evidencia de explotación (no hay más de un usuario `_WRITE` activo hoy fuera de plataforma), pero la ventana existió.

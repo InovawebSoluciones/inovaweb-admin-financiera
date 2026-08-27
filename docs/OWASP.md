@@ -418,3 +418,51 @@ Ninguna (sin ❌).
 5. Confirmar pago manual real de comisiones con Norma Silva tras primera recarga de cliente NYM.
 
 *Addendum OWASP — auditoría 2026-06-19 (módulo referidos distribuidores). Commit 6fa7043.*
+
+---
+
+## Addendum 2026-08-27 — Códigos de vendedor por distribuidor (ADR-032)
+
+**Commit auditado:** `1c85d35` (CAF, rama `main`)
+**Resultado:** **PASS POST-FIX** — un hallazgo crítico encontrado y corregido antes del commit; ya no bloquea.
+
+### Resumen
+
+| Categoría | Estado | Hallazgos |
+|---|---|---|
+| SQL Injection | ✅ PASS | Nueva query de `distributor_codes` en `api_app_onboard` y en los 2 endpoints admin usan `text()` con bind params nominales |
+| XSS | ✅ PASS | Sección nueva de `distributor_detail.html` con Jinja2 autoescape; sin `\|safe` |
+| CSRF | ⚠️ REVISAR | Deuda heredada — sin cambio |
+| Secrets hardcodeados | ✅ PASS | Sin secretos; códigos de vendedor son datos públicos igual que el `referral_code` del distribuidor |
+| Control de acceso / IDOR | 🔴→✅ CORREGIDO | `toggle_distributor_code` no verificaba `organization_id` — IDOR cross-tenant. Corregido antes del commit (ver detalle) |
+| Dinero / cálculo de comisión | ✅ PASS | `_maybe_accrue_commission` no se tocó; sigue leyendo solo `distributors.commission_pct` |
+| Idempotencia / condiciones de carrera | ⚠️ REVISAR (nueva, menor) | TOCTOU entre el alta de un distribuidor y el alta de un código de vendedor con el mismo texto (ver detalle) |
+
+### Detalle
+
+#### 🔴→✅ IDOR cross-tenant en `toggle_distributor_code` — encontrado y corregido
+`POST /admin/distributors/{dist_id}/codes/{code_id}/toggle` llegó a producción sin verificar que `dist_id` perteneciera a la organización del usuario autenticado — a diferencia de `create_distributor_code`, que sí valida ownership. Cualquier usuario con rol `_WRITE` (`super_admin` o `finanzas`) de **cualquier organización tenant** podía activar/desactivar el código de un distribuidor ajeno adivinando IDs secuenciales. Mismo patrón de bug que el hallazgo crítico corregido en `6faaeb5` (addendum 2026-06-18).
+
+**Ventana de exposición:** el endpoint estuvo desplegado en prod sin el fix desde el primer despliegue de este módulo hasta que la revisión de código lo detectó — corregido y redesplegado el mismo día. No hay evidencia de explotación.
+
+**Fix:** se agregó el mismo chequeo `_org_scope` que ya usa `create_distributor_code`, devolviendo 404 si el distribuidor no pertenece a la organización del usuario (o si el usuario no es `is_platform`).
+
+#### ✅ SQL Injection — PASS
+El lookup en cascada de `api_app_onboard` (`distributor_codes` como fallback de `distributors.referral_code`) usa `text()` con `:c` y `:org` parametrizados. `create_distributor_code` y el `UPDATE` de toggle usan bind params nominales en todos los campos.
+
+#### ✅ XSS — PASS
+La nueva sección "Códigos de vendedor" en `distributor_detail.html` usa Jinja2 autoescape (`{{ cod.label }}`, `{{ cod.code }}`); sin `|safe`.
+
+#### ⚠️ Idempotencia — TOCTOU entre tablas (nueva, menor, no bloqueante)
+El chequeo cruzado de unicidad (un código de vendedor no puede repetir el `referral_code` de un distribuidor, y viceversa) es check-then-insert en ambos sentidos, sin constraint de BD que abarque las dos tablas. Ventana de carrera teórica si dos altas administrativas ocurren en el mismo instante. Severidad baja: es un panel interno de bajo volumen de escritura, no hay impacto en dinero (la comisión no distingue por código, solo por `distributor_id`). No se corrige en esta iteración — desproporcionado al riesgo real.
+
+#### ✅ Dinero — sin cambio de comportamiento
+`_maybe_accrue_commission` (`prepago.py`) no fue tocado por este cambio. Confirmado en 2 corridas de validación contra Postgres desechable que la comisión se calcula igual sin importar si el cliente entró por código principal o de vendedor.
+
+### Acciones requeridas antes del siguiente push
+Ninguna (el único ❌ encontrado ya fue corregido en este mismo commit).
+
+### Deuda técnica acumulada (no bloqueante) — sin cambios respecto al addendum anterior, más:
+6. TOCTOU en el chequeo cruzado de unicidad de `distributor_codes` vs `distributors.referral_code` — aceptado por bajo riesgo/volumen.
+
+*Addendum OWASP — auditoría 2026-08-27 (códigos de vendedor, ADR-032). Commit 1c85d35.*

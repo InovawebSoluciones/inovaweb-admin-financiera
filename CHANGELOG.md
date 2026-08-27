@@ -7,6 +7,25 @@ Orden cronológico inverso: lo más reciente primero.
 
 ---
 
+## [0.11.0] — 2026-08-27 — Códigos de vendedor por distribuidor + CRUD catálogo servicios/productos
+
+### Agregado
+- **Migración `040_distributor_codes.sql`** — tabla `distributor_codes` (uno por vendedor de un distribuidor). Cada código hijo resuelve al mismo `distributor_id` que el código principal.
+- **`api_router.py`** — `POST /api/v2/apps/onboard` resuelve `referral_code` en cascada: primero `distributors.referral_code`, si no matchea entonces `distributor_codes.code` (activo). Un solo campo de entrada para el cliente final.
+- **Panel `/admin/distributors/{id}`** — sección "Códigos de vendedor": alta (nombre + código) y activar/desactivar.
+- **CRUD de catálogo** (`edit_service`, `toggle_service`, `create_product`, `edit_product`) — sincronizado desde un cambio que se había desplegado directo en el VPS sin pasar por git.
+
+### Corregido
+- **`toggle_distributor_code`** no verificaba `organization_id` del distribuidor antes de escribir — IDOR cross-tenant (mismo patrón que el fix 6faaeb5 de este módulo). Detectado en `code-review` post-despliegue, corregido y redesplegado el mismo día.
+
+### Sin cambios de comportamiento
+- `_maybe_accrue_commission` (`prepago.py`) no se tocó: la comisión sigue calculándose solo por `distributors.commission_pct`, sin distinguir código principal vs. de vendedor — decisión explícita del usuario.
+
+### Validación
+- Doble corrida contra Postgres desechable: esquema sintético mínimo y volcado `--schema-only` real de producción. Resolución de código (principal, vendedor, vendedor inactivo) verificada en ambos.
+
+---
+
 ## [0.10.1] — 2026-06-19 — Catálogo LiaForge: imagen_ia + precio validacion_pagina
 
 ### Agregado
